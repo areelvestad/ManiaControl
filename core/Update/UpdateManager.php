@@ -237,7 +237,7 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 		}
 
 		$updateData = $this->coreUpdateData;
-		$updateDataUrl = "https://github.com/mmilja/ManiaControl/archive/refs/tags/v" . $updateData . ".zip";
+		$updateDataUrl = "https://github.com/areelvestad/ManiaControl/archive/refs/tags/v" . $updateData . ".zip";
 
 		$asyncHttpRequest = new AsyncHttpRequest($this->maniaControl, $updateDataUrl);
 		$asyncHttpRequest->setCallable(function ($updateFileContent, $error) use (
