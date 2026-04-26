@@ -40,6 +40,10 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 	const ACTION_SEARCH_AUTHOR        = 'ManiaExchangeList.SearchAuthor';
 	const ACTION_GET_MAPS_FROM_AUTHOR = 'ManiaExchangeList.GetMapsFromAuthor';
 	const MAX_MX_MAPS_PER_PAGE        = 14;
+	const STATUS_LOOKING_FOR_NEW_MAPS = 'Looking for new maps...';
+	const STATUS_USING_CACHED_RESULTS = 'Showing cached MX results';
+	const STATUS_NO_RESULTS           = 'No maps found on MX.';
+	const STATUS_REQUEST_FAILED       = 'MX request failed';
 
 	/*
 	 * Private properties
@@ -47,6 +51,7 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 	/** @var ManiaControl $maniaControl */
 	private $maniaControl = null;
 	private $mapListShown = array();
+	private $playerSearchState = array();
 
 	/**
 	 * Construct a new MX List instance
@@ -141,32 +146,55 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 	 * @param string                       $searchString
 	 */
 	private function getMXMapsAndShowList(Player $player, $author = '', $environment = '', $searchString = '') {
-		//TODO do more clean solution
-		if($environment == ""){
-			$titleId           = $this->maniaControl->getServer()->titleId;
-			//Set Environments on Trackmania
-			$game      = explode('@', $titleId);
-			$envNumber = ManiaExchangeMapSearch::getEnvironment($game[0]); //TODO enviroment as constant
-			if ($envNumber > -1) {
-				$environment = $envNumber;
-			}
+		$mxManager = $this->maniaControl->getMapManager()->getMXManager();
+		$cacheKey  = $mxManager->getSearchCacheKey($author, $environment, $searchString);
+		$cacheEntry = $mxManager->getSearchCacheEntry($author, $environment, $searchString);
+
+		$this->setPlayerSearchState($player, $cacheKey, ($cacheEntry ? $cacheEntry['hash'] : null));
+
+		if ($cacheEntry) {
+			$this->showManiaExchangeList($cacheEntry['maps'], $player, self::STATUS_LOOKING_FOR_NEW_MAPS);
+		} else {
+			$this->showLoadingList($player);
 		}
 
-		//Search the Maps
-		$mxSearch = new ManiaExchangeMapSearch($this->maniaControl);
-		$mxSearch->setAuthorName($author);
-		$mxSearch->setEnvironments($environment);
-		$mxSearch->setMapName($searchString);
-		
-		$mxSearch->fetchMapsAsync(function (array $maps) use (&$player) {
-			if (!$maps) {
-				$this->maniaControl->getChat()->sendError('No maps found, or MX is down!', $player);
+		$mxManager->fetchSearchMapsAsync($author, $environment, $searchString, function (array $maps, $returnedCacheKey, $hash, $error = null) use (&$player, $cacheEntry) {
+			if (!$this->isPlayerViewingQuery($player, $returnedCacheKey)) {
 				return;
 			}
+
+			if ($error !== null) {
+				if ($cacheEntry) {
+					$this->showManiaExchangeList($cacheEntry['maps'], $player, self::STATUS_USING_CACHED_RESULTS);
+				} else {
+					$this->showManiaExchangeList(array(), $player, self::STATUS_REQUEST_FAILED, 'Could not reach MX right now.');
+					$this->maniaControl->getChat()->sendError('Could not reach MX right now.', $player);
+				}
+				return;
+			}
+
+			$shownHash = $this->getPlayerSearchHash($player);
+			$this->setPlayerSearchState($player, $returnedCacheKey, $hash);
+			if (!$maps) {
+				$this->showManiaExchangeList(array(), $player, self::STATUS_NO_RESULTS, self::STATUS_NO_RESULTS);
+				return;
+			}
+
+			if ($cacheEntry && $shownHash !== null && $shownHash === $hash) {
+				$this->showManiaExchangeList($maps, $player);
+				return;
+			}
+
 			$this->showManiaExchangeList($maps, $player);
 		});
+	}
 
-		// show temporary list to wait for Async
+	/**
+	 * Show the temporary loading state before the first MX response arrives.
+	 *
+	 * @param Player $player
+	 */
+	private function showLoadingList(Player $player) {
 		$labelStyle = $this->maniaControl->getManialinkManager()->getStyleManager()->getDefaultLabelStyle();
 
 		$maniaLink = new ManiaLink(ManialinkManager::MAIN_MLID);
@@ -182,15 +210,16 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 		$this->maniaControl->getManialinkManager()->sendManialink($maniaLink, $player);
 	}
 
-
 	/**
 	 * Display the Mania Exchange List
 	 *
 	 * @param MXMapInfo[] $maps
 	 * @param Player      $player
+	 * @param string|null $statusMessage
+	 * @param string      $emptyMessage
 	 * @internal param array $chatCallback
 	 */
-	private function showManiaExchangeList(array $maps, Player $player) {
+	private function showManiaExchangeList(array $maps, Player $player, $statusMessage = null, $emptyMessage = self::STATUS_NO_RESULTS) {
 		// Start offsets
 		$width  = $this->maniaControl->getManialinkManager()->getStyleManager()->getListWidgetsWidth();
 		$height = $this->maniaControl->getManialinkManager()->getStyleManager()->getListWidgetsHeight();
@@ -225,6 +254,15 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 		$labelLine->addLabelEntryText('Last Update', $posX + 130, $width - ($posX + 131));
 
 		$labelLine->render();
+
+		if ($statusMessage) {
+			$statusLabel = new Label_Text();
+			$frame->addChild($statusLabel);
+			$statusLabel->setPosition($posX + 3.5, -$height / 2 + 4.5, 1);
+			$statusLabel->setHorizontalAlign($statusLabel::LEFT);
+			$statusLabel->setTextSize(1.2);
+			$statusLabel->setText($statusMessage);
+		}
 
 		$index     = 0;
 		$posY      = $height / 2 - 16;
@@ -324,7 +362,20 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 			$index++;
 		}
 
-		$searchFrame = $this->maniaControl->getManialinkManager()->getStyleManager()->getDefaultMapSearch(self::ACTION_SEARCH_MAPNAME, self::ACTION_SEARCH_AUTHOR);
+		if (!$maps) {
+			$pageFrame = new Frame();
+			$frame->addChild($pageFrame);
+			$paging->addPageControl($pageFrame);
+
+			$emptyLabel = new Label_Text();
+			$pageFrame->addChild($emptyLabel);
+			$emptyLabel->setPosition($posX + 12.5, $height / 2 - 20);
+			$emptyLabel->setHorizontalAlign($emptyLabel::LEFT);
+			$emptyLabel->setTextSize(1.7);
+			$emptyLabel->setText($emptyMessage);
+		}
+
+		$searchFrame = $this->maniaControl->getManialinkManager()->getStyleManager()->getDefaultMapSearch(self::ACTION_SEARCH_MAPNAME, self::ACTION_SEARCH_AUTHOR, null, 'Map');
 		$searchFrame->setY($height / 2 - 5);
 		$frame->addChild($searchFrame);
 
@@ -343,6 +394,7 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 		//unset when another main widget got opened
 		if ($openedWidget !== 'ManiaExchangeList') {
 			unset($this->mapListShown[$player->login]);
+			unset($this->playerSearchState[$player->login]);
 		}
 	}
 
@@ -354,6 +406,53 @@ class ManiaExchangeList implements CallbackListener, ManialinkPageAnswerListener
 	 */
 	public function closeWidget(Player $player) {
 		unset($this->mapListShown[$player->login]);
+		unset($this->playerSearchState[$player->login]);
+	}
+
+	/**
+	 * Remember which MX query the player is currently viewing.
+	 *
+	 * @param Player      $player
+	 * @param string      $cacheKey
+	 * @param string|null $hash
+	 */
+	private function setPlayerSearchState(Player $player, $cacheKey, $hash = null) {
+		$this->playerSearchState[$player->login] = array(
+			'queryKey' => $cacheKey,
+			'hash'     => $hash,
+		);
+	}
+
+	/**
+	 * Check whether the player is still looking at the given MX query.
+	 *
+	 * @param Player $player
+	 * @param string $cacheKey
+	 * @return bool
+	 */
+	private function isPlayerViewingQuery(Player $player, $cacheKey) {
+		if (empty($this->mapListShown[$player->login])) {
+			return false;
+		}
+		if (!isset($this->playerSearchState[$player->login])) {
+			return false;
+		}
+
+		return ($this->playerSearchState[$player->login]['queryKey'] === $cacheKey);
+	}
+
+	/**
+	 * Get the result hash currently shown to the player.
+	 *
+	 * @param Player $player
+	 * @return string|null
+	 */
+	private function getPlayerSearchHash(Player $player) {
+		if (!isset($this->playerSearchState[$player->login])) {
+			return null;
+		}
+
+		return $this->playerSearchState[$player->login]['hash'];
 	}
 
 }

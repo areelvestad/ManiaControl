@@ -11,7 +11,6 @@ use ManiaControl\Callbacks\CallbackManager;
 use ManiaControl\Commands\CommandListener;
 use ManiaControl\Logger;
 use ManiaControl\ManiaControl;
-use ManiaControl\Manialinks\ElementBuilder;
 use ManiaControl\Manialinks\IconManager;
 use ManiaControl\Manialinks\ManialinkPageAnswerListener;
 use ManiaControl\Players\Player;
@@ -404,21 +403,7 @@ class MapCommands implements CommandListener, ManialinkPageAnswerListener, Callb
 	 * @param Player $player
 	 */
 	private function showMapListAuthor($author, Player $player) {
-		$maps    = $this->maniaControl->getMapManager()->getMaps();
-		$mapList = array();
-		/** @var Map $map */
-		foreach ($maps as $map) {
-			if ($map->authorLogin == $author) {
-				array_push($mapList, $map);
-			}
-		}
-
-		if (empty($mapList)) {
-			$this->maniaControl->getChat()->sendError('There are no maps to show!', $player->login);
-			return;
-		}
-
-		$this->maniaControl->getMapManager()->getMapList()->showMapList($player, $mapList);
+		$this->maniaControl->getMapManager()->getMapList()->showAuthorMapList($player, $author);
 	}
 
 	/**
@@ -454,11 +439,11 @@ class MapCommands implements CommandListener, ManialinkPageAnswerListener, Callb
 					}
 					break;
 				default:
-					$this->maniaControl->getMapManager()->getMapList()->showMapList($player);
+					$this->maniaControl->getMapManager()->getMapList()->showFullMapList($player);
 					break;
 			}
 		} else {
-			$this->maniaControl->getMapManager()->getMapList()->showMapList($player);
+			$this->maniaControl->getMapManager()->getMapList()->showFullMapList($player);
 		}
 	}
 
@@ -469,58 +454,7 @@ class MapCommands implements CommandListener, ManialinkPageAnswerListener, Callb
 	 * @param Player $player
 	 */
 	private function showMapListKarma($best, Player $player) {
-		/** @var \MCTeam\KarmaPlugin $karmaPlugin */
-		$karmaPlugin = $this->maniaControl->getPluginManager()->getPlugin(ElementBuilder::DEFAULT_KARMA_PLUGIN);
-
-		if ($karmaPlugin) {
-			$displayMxKarma = $this->maniaControl->getSettingManager()->getSettingValue($karmaPlugin, $karmaPlugin::SETTING_WIDGET_DISPLAY_MX);
-			//Sort by Mx Karma in Maplist
-			if ($displayMxKarma) { //TODO
-
-				//Sort by Local Karma in Maplist
-			} else {
-
-			}
-
-			$maps    = $this->maniaControl->getMapManager()->getMaps();
-			$mapList = array();
-			foreach ($maps as $map) {
-				if ($map instanceof Map) {
-					if ($this->maniaControl->getSettingManager()->getSettingValue($karmaPlugin, $karmaPlugin::SETTING_NEWKARMA) === true) {
-						$karma      = $karmaPlugin->getMapKarma($map);
-						$map->karma = round($karma * 100.);
-					} else {
-						$votes = $karmaPlugin->getMapVotes($map);
-						$min   = 0;
-						$plus  = 0;
-						foreach ($votes as $vote) {
-							if (isset($vote->vote)) {
-								if ($vote->vote !== 0.5) {
-									if ($vote->vote < 0.5) {
-										$min = $min + $vote->count;
-									} else {
-										$plus = $plus + $vote->count;
-									}
-								}
-							}
-						}
-						$map->karma = $plus - $min;
-					}
-					$mapList[] = $map;
-				}
-			}
-
-			usort($mapList, function (Map $mapA, Map $mapB) {
-				return ($mapA->karma - $mapB->karma);
-			});
-			if ($best) {
-				$mapList = array_reverse($mapList);
-			}
-
-			$this->maniaControl->getMapManager()->getMapList()->showMapList($player, $mapList);
-		} else {
-			$this->maniaControl->getChat()->sendError('KarmaPlugin is not enabled!', $player->login);
-		}
+		$this->maniaControl->getMapManager()->getMapList()->showKarmaMapList($player, $best);
 	}
 
 	/**
@@ -530,16 +464,7 @@ class MapCommands implements CommandListener, ManialinkPageAnswerListener, Callb
 	 * @param Player $player
 	 */
 	private function showMapListDate($newest, Player $player) {
-		$maps = $this->maniaControl->getMapManager()->getMaps();
-
-		usort($maps, function (Map $mapA, Map $mapB) {
-			return ($mapA->index - $mapB->index);
-		});
-		if ($newest) {
-			$maps = array_reverse($maps);
-		}
-
-		$this->maniaControl->getMapManager()->getMapList()->showMapList($player, $maps);
+		$this->maniaControl->getMapManager()->getMapList()->showDateMapList($player, $newest);
 	}
 
 	/**

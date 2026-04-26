@@ -542,11 +542,15 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	 */
 	private function updateFullMapList() {
 		$tempList = array();
+		$limit    = 150;
 
 		try {
 			$offset = 0;
-			while ($this->maniaControl->getClient() && $offset < 5000) {
-				$maps = $this->maniaControl->getClient()->getMapList(150, $offset);
+			while ($this->maniaControl->getClient()) {
+				$maps = $this->maniaControl->getClient()->getMapList($limit, $offset);
+				if (empty($maps)) {
+					break;
+				}
 
 				foreach ($maps as $rpcMap) {
 					if (array_key_exists($rpcMap->uId, $this->maps)) {
@@ -559,7 +563,11 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 					}
 				}
 
-				$offset += 150;
+				if (count($maps) < $limit) {
+					break;
+				}
+
+				$offset += $limit;
 			}
 
 		} catch (IndexOutOfBoundException $e) {
@@ -1041,6 +1049,29 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 		return $this->searchMaps($searchString, self::SEARCH_BY_AUTHOR);
 	}
 
+	/**
+	 * Returns all maps from the exact author login
+	 *
+	 * @param string $authorLogin
+	 * @return array
+	 */
+	public function getMapsByAuthorLogin($authorLogin) {
+		$result           = array();
+		$normalizedAuthor = $this->normalizeSearchText($authorLogin);
+
+		if ($normalizedAuthor === '') {
+			return $result;
+		}
+
+		foreach ($this->maps as $map) {
+			if ($this->normalizeSearchText($map->authorLogin) === $normalizedAuthor) {
+				$result[] = $map;
+			}
+		}
+
+		return $result;
+	}
+
 
 	/**
 	 * Searches the current map list for a map name
@@ -1061,28 +1092,46 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	 */
 	private function searchMaps($searchString, $searchBy = self::SEARCH_BY_MAP_NAME) {
 		$result       = array();
-		$searchString = strtolower($searchString);
+		$searchString = $this->normalizeSearchText($searchString);
 
-		if($searchString == ''){
+		if ($searchString === '') {
 			return $result;
 		}
 
 		foreach ($this->maps as $map) {
 			switch ($searchBy) {
 				case self::SEARCH_BY_MAP_NAME:
-					$mapName = strtolower(Formatter::stripCodes($map->name));
+					$mapName = $this->normalizeSearchText(Formatter::stripCodes($map->name));
 
 					if (strpos($mapName, $searchString) !== false) {
 						array_push($result, $map);
 					}
 					break;
 				case self::SEARCH_BY_AUTHOR:
-					if (strpos(strtolower($map->authorLogin), $searchString) !== false) {
+					if (strpos($this->normalizeSearchText($map->authorLogin), $searchString) !== false) {
 						array_push($result, $map);
 					}
 			}
 		}
 		return $result;
+	}
+
+	/**
+	 * Normalize text for map and author searches
+	 *
+	 * @param mixed $text
+	 * @return string
+	 */
+	private function normalizeSearchText($text) {
+		$text = trim((string) $text);
+		if ($text === '') {
+			return '';
+		}
+
+		if (function_exists('mb_strtolower')) {
+			return mb_strtolower($text, 'UTF-8');
+		}
+		return strtolower($text);
 	}
 
 

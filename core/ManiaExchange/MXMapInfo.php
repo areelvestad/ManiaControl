@@ -31,61 +31,57 @@ class MXMapInfo {
 	 * @return \ManiaControl\ManiaExchange\MXMapInfo|void
 	 */
 	public function __construct($prefix, $mx) {
-		$this->prefix = $prefix;
+		$config       = self::getSiteConfig($prefix);
+		$this->prefix = $config['prefix'];
+		$this->dir    = $config['dir'];
 
 		if (!$mx) {
 			return;
 		}
 
-		if ($this->prefix === 'tm') {
-			$this->dir = 'tracks';
-			$this->id  = $mx->TrackID;
-			$this->uid = isset($mx->TrackUID) ? $mx->TrackUID : '';
+		$this->id  = self::readProperty($mx, array('MapId', 'MapID', 'TrackID'), 0);
+		$this->uid = self::readProperty($mx, array('MapUid', 'TrackUID'), '');
+
+		$gbxMapName = self::readProperty($mx, array('GbxMapName'));
+		if (!$gbxMapName || $gbxMapName === '?') {
+			$this->name = self::readProperty($mx, array('Name'), '');
 		} else {
-			$this->dir = 'maps';
-			$this->id  = $mx->MapID;
-			$this->uid = isset($mx->TrackUID) ? $mx->TrackUID : ''; // TODO: fix when migrating to new api; TrackUID is equal to MapUID
+			$this->name = Formatter::stripDirtyCodes($gbxMapName);
 		}
 
-		if (!isset($mx->GbxMapName) || $mx->GbxMapName === '?') {
-			$this->name = $mx->Name;
-		} else {
-			$this->name = Formatter::stripDirtyCodes($mx->GbxMapName);
-		}
+		$this->userid      = self::readNestedProperty($mx, array('Uploader', 'UserId'), self::readProperty($mx, array('UserID'), 0));
+		$this->author      = self::readNestedProperty($mx, array('Uploader', 'Name'), self::readNestedProperty($mx, array('Authors', 0, 'User', 'Name'), self::readProperty($mx, array('Username'), '')));
+		$this->uploaded    = self::readProperty($mx, array('UploadedAt'), '');
+		$this->updated     = self::readProperty($mx, array('UpdatedAt'), '');
+		$this->type        = self::readProperty($mx, array('TypeName', 'Type'), '');
+		$this->maptype     = self::readProperty($mx, array('MapType'), '');
+		$this->titlepack   = self::readProperty($mx, array('TitlePack'), '');
+		$this->style       = self::readProperty($mx, array('StyleName', 'Style'), '');
+		$this->envir       = self::readProperty($mx, array('EnvironmentName', 'Environment'), '');
+		$this->mood        = self::readProperty($mx, array('Mood', 'MoodFull'), '');
+		$this->dispcost    = self::readProperty($mx, array('DisplayCost'), 0);
+		$this->lightmap    = self::readProperty($mx, array('Lightmap'), 0);
+		$this->modname     = self::readProperty($mx, array('ModName'), '');
+		$this->exever      = self::readProperty($mx, array('ExeVersion'), '');
+		$this->exebld      = self::readProperty($mx, array('ExeBuild'), '');
+		$this->routes      = self::readProperty($mx, array('RouteName', 'Routes'), '');
+		$this->length      = self::readProperty($mx, array('LengthName', 'Length'), '');
+		$this->unlimiter   = self::readProperty($mx, array('UnlimiterRequired'), false);
+		$this->laps        = self::readProperty($mx, array('Laps'), 0);
+		$this->difficulty  = self::readProperty($mx, array('DifficultyName', 'Difficulty'), '');
+		$this->lbrating    = self::readProperty($mx, array('LBRating'), 0);
+		$this->trkvalue    = self::readProperty($mx, array('TrackValue'), 0);
+		$this->replaytyp   = self::readProperty($mx, array('ReplayTypeName', 'ReplayType'), '');
+		$this->replayid    = self::readProperty($mx, array('ReplayWRID'), 0);
+		$this->replaycnt   = self::readProperty($mx, array('ReplayCount'), 0);
+		$this->awards      = self::readProperty($mx, array('AwardCount'), 0);
+		$this->vehicleName = self::readProperty($mx, array('VehicleName'), '');
 
-		$this->userid      = $mx->UserID;
-		$this->author      = $mx->Username;
-		$this->uploaded    = $mx->UploadedAt;
-		$this->updated     = $mx->UpdatedAt;
-		$this->type        = $mx->TypeName;
-		$this->maptype     = isset($mx->MapType) ? $mx->MapType : '';
-		$this->titlepack   = isset($mx->TitlePack) ? $mx->TitlePack : '';
-		$this->style       = isset($mx->StyleName) ? $mx->StyleName : '';
-		$this->envir       = $mx->EnvironmentName;
-		$this->mood        = $mx->Mood;
-		$this->dispcost    = $mx->DisplayCost;
-		$this->lightmap    = $mx->Lightmap;
-		$this->modname     = isset($mx->ModName) ? $mx->ModName : '';
-		$this->exever      = $mx->ExeVersion;
-		$this->exebld      = $mx->ExeBuild;
-		$this->routes      = isset($mx->RouteName) ? $mx->RouteName : '';
-		$this->length      = isset($mx->LengthName) ? $mx->LengthName : '';
-		$this->unlimiter   = isset($mx->UnlimiterRequired) ? $mx->UnlimiterRequired : false;
-		$this->laps        = isset($mx->Laps) ? $mx->Laps : 0;
-		$this->difficulty  = $mx->DifficultyName;
-		$this->lbrating    = isset($mx->LBRating) ? $mx->LBRating : 0;
-		$this->trkvalue    = isset($mx->TrackValue) ? $mx->TrackValue : 0;
-		$this->replaytyp   = isset($mx->ReplayTypeName) ? $mx->ReplayTypeName : '';
-		$this->replayid    = isset($mx->ReplayWRID) ? $mx->ReplayWRID : 0;
-		$this->replaycnt   = isset($mx->ReplayCount) ? $mx->ReplayCount : 0;
-		$this->awards      = isset($mx->AwardCount) ? $mx->AwardCount : 0;
-		$this->vehicleName = isset($mx->VehicleName) ? $mx->VehicleName : '';
+		$this->authorComment = self::readProperty($mx, array('Comments', 'AuthorComments'), '');
+		$this->commentCount  = self::readProperty($mx, array('CommentCount'), 0);
 
-		$this->authorComment = $mx->Comments;
-		$this->commentCount  = $mx->CommentCount;
-
-		$this->ratingVoteCount   = isset($mx->RatingVoteCount) ? $mx->RatingVoteCount : 0;
-		$this->ratingVoteAverage = isset($mx->RatingVoteAverage) ? $mx->RatingVoteAverage : 0;
+		$this->ratingVoteCount   = self::readProperty($mx, array('RatingVoteCount'), 0);
+		$this->ratingVoteAverage = self::readProperty($mx, array('RatingVoteAverage'), 0);
 
 		if (!$this->trkvalue && $this->lbrating > 0) {
 			$this->trkvalue = $this->lbrating;
@@ -93,25 +89,111 @@ class MXMapInfo {
 			$this->lbrating = $this->trkvalue;
 		}
 
-		$this->pageurl     = 'https://' . $this->prefix . '.mania-exchange.com/' . $this->dir . '/view/' . $this->id;
-		$this->downloadurl = 'https://' . $this->prefix . '.mania-exchange.com/' . $this->dir . '/download/' . $this->id;
+		$baseUrl           = $config['baseUrl'];
+		$this->pageurl     = $baseUrl . '/' . $this->dir . '/view/' . $this->id;
+		$this->downloadurl = $baseUrl . '/' . $this->dir . '/download/' . $this->id;
 
-		if ($mx->HasScreenshot) {
-			$this->imageurl = 'https://' . $this->prefix . '.mania-exchange.com/' . $this->dir . '/screenshot/normal/' . $this->id;
+		if (self::readProperty($mx, array('HasImages', 'HasScreenshot'), false)) {
+			$this->imageurl = $baseUrl . '/' . $this->dir . '/screenshot/normal/' . $this->id;
 		} else {
 			$this->imageurl = '';
 		}
 
-		if ($mx->HasThumbnail) {
-			$this->thumburl = 'https://' . $this->prefix . '.mania-exchange.com/' . $this->dir . '/thumbnail/' . $this->id;
+		if (self::readProperty($mx, array('HasThumbnail'), false)) {
+			$this->thumburl = $baseUrl . '/' . $this->dir . '/thumbnail/' . $this->id;
 		} else {
 			$this->thumburl = '';
 		}
 
 		if ($this->prefix === 'tm' && $this->replayid > 0) {
-			$this->replayurl = 'https://' . $this->prefix . '.mania-exchange.com/replays/download/' . $this->replayid;
+			$this->replayurl = $baseUrl . '/replays/download/' . $this->replayid;
 		} else {
 			$this->replayurl = '';
 		}
+	}
+
+	/**
+	 * Resolve the MX base URL for the given title prefix.
+	 *
+	 * @param string $prefix
+	 * @return string
+	 */
+	public static function getExchangeBaseUrl($prefix) {
+		$config = self::getSiteConfig($prefix);
+		return $config['baseUrl'];
+	}
+
+	/**
+	 * Resolve host and URL path settings for an MX title prefix.
+	 *
+	 * @param string $prefix
+	 * @return array
+	 */
+	private static function getSiteConfig($prefix) {
+		$prefix = strtolower((string) $prefix);
+
+		switch ($prefix) {
+			case 'tm':
+				return array(
+					'prefix'  => 'tm',
+					'baseUrl' => 'https://tm.mania.exchange',
+					'dir'     => 'tracks',
+				);
+			case 'sm':
+				return array(
+					'prefix'  => 'sm',
+					'baseUrl' => 'https://sm.mania.exchange',
+					'dir'     => 'maps',
+				);
+			default:
+				return array(
+					'prefix'  => $prefix,
+					'baseUrl' => 'https://' . $prefix . '.mania.exchange',
+					'dir'     => ($prefix === 'tm' ? 'tracks' : 'maps'),
+				);
+		}
+	}
+
+	/**
+	 * Read the first available property from an MX payload.
+	 *
+	 * @param object $mx
+	 * @param array  $properties
+	 * @param mixed  $default
+	 * @return mixed
+	 */
+	private static function readProperty($mx, array $properties, $default = null) {
+		foreach ($properties as $property) {
+			if (is_object($mx) && property_exists($mx, $property) && $mx->{$property} !== null) {
+				return $mx->{$property};
+			}
+		}
+
+		return $default;
+	}
+
+	/**
+	 * Read a nested property from an MX payload.
+	 *
+	 * @param mixed $value
+	 * @param array $path
+	 * @param mixed $default
+	 * @return mixed
+	 */
+	private static function readNestedProperty($value, array $path, $default = null) {
+		foreach ($path as $segment) {
+			if (is_object($value) && property_exists($value, $segment)) {
+				$value = $value->{$segment};
+				continue;
+			}
+			if (is_array($value) && isset($value[$segment])) {
+				$value = $value[$segment];
+				continue;
+			}
+
+			return $default;
+		}
+
+		return ($value === null ? $default : $value);
 	}
 }

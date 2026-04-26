@@ -18,6 +18,8 @@ use Maniaplanet\DedicatedServer\Xmlrpc\GameModeException;
 class ManiaExchangeMapSearch implements UsageInformationAble {
 	use UsageInformationTrait;
 
+	const V2_FIELDS = 'MapId,MapUid,Name,GbxMapName,UploadedAt,UpdatedAt,Uploader.UserId,Uploader.Name,MapType,Mood,AwardCount,CommentCount,TrackValue,HasThumbnail,HasImages';
+
 	//Search orders (prior parameter) https://api2.mania.exchange/documents/enums#orderings
 	const SEARCH_ORDER_NONE               = -1;
 	const SEARCH_ORDER_TRACK_NAME         = 0;
@@ -102,7 +104,12 @@ class ManiaExchangeMapSearch implements UsageInformationAble {
 
 		$this->titlePrefix = $this->maniaControl->getMapManager()->getCurrentMap()->getGame();
 
-		$this->url = 'https://' . $this->titlePrefix . '.mania-exchange.com/tracksearch2/search?api=on';
+		$this->url = MXMapInfo::getExchangeBaseUrl($this->titlePrefix) . '/api/maps';
+
+		$titleIdParts = explode('@', (string) $this->maniaControl->getServer()->titleId);
+		if (!empty($titleIdParts[0])) {
+			$this->titlePack = $titleIdParts[0];
+		}
 
 		/*if ($key = $this->maniaControl->getSettingManager()->getSettingValue($this->maniaControl->getMapManager()->getMXManager(), ManiaExchangeManager::SETTING_MX_KEY)) {
 			$this->url .= "&key=" . $key;
@@ -123,8 +130,12 @@ class ManiaExchangeMapSearch implements UsageInformationAble {
 		try {
 			$scriptInfos           = $this->maniaControl->getClient()->getModeScriptInfo();
 			$mapTypes              = $scriptInfos->compatibleMapTypes;
-			$this->maniaScriptType = $mapTypes;
+			$this->maniaScriptType = $this->resolvePreferredMapType($mapTypes);
 		} catch (GameModeException $e) {
+		}
+
+		if (!$this->maniaScriptType) {
+			$this->maniaScriptType = $this->getCurrentMapType();
 		}
 
 	}
@@ -135,110 +146,116 @@ class ManiaExchangeMapSearch implements UsageInformationAble {
 	 * @param callable $function
 	 */
 	public function fetchMapsAsync(callable $function) {
-		// compile search URL
-		$parameters = "";
+		$this->fetchMapsDetailedAsync(function (array $maps, $error = null) use (&$function) {
+			call_user_func($function, $maps);
+		});
+	}
 
-		if ($this->mode) {
-			$parameters .= "&mode=" . $this->mode;
-		}
+	/**
+	 * Fetch a MapList asynchronously and also report transport / decode errors.
+	 *
+	 * @param callable $function
+	 */
+	public function fetchMapsDetailedAsync(callable $function) {
+		$this->fetchMapsByQuery($this->buildQuery(), $function);
+	}
+
+	/**
+	 * Build the current MX v2 query array.
+	 *
+	 * @return array
+	 */
+	public function buildQuery() {
+		$query = array(
+			'fields' => self::V2_FIELDS,
+		);
+
 		if ($this->mapName) {
-			$parameters .= "&trackname=" . urlencode($this->mapName);
+			$query['name'] = $this->mapName;
 		}
 		if ($this->authorName) {
-			$parameters .= "&author=" . urlencode($this->authorName);
-		}
-		if ($this->mod) {
-			$parameters .= "&mod=" . urlencode($this->mod);
-		}
-		if ($this->authorId) {
-			$parameters .= "&authorid= " . $this->authorId;
-		}
-		if ($this->maniaScriptType) {
-			$parameters .= "&mtype=" . urlencode($this->maniaScriptType);
+			$query['author'] = $this->authorName;
 		}
 		if ($this->titlePack) {
-			$parameters .= "&tpack=" . urlencode($this->titlePack);
-		}
-		if ($this->replayType) {
-			$parameters .= "&rytpe=" . $this->replayType;
-		}
-		if ($this->style) {
-			$parameters .= "&style=" . $this->style;
-		}
-		if ($this->length) {
-			$parameters .= "&length=" . $this->length;
-		}
-		if ($this->lengthOperator) {
-			$parameters .= "&lengthop=" . $this->lengthOperator;
-		}
-		if ($this->priorityOrder) {
-			$parameters .= "&priord=" . $this->priorityOrder;
-		}
-		if ($this->secondaryOrder) {
-			$parameters .= "&secord=" . $this->secondaryOrder;
-		}
-		if ($this->environments) {
-			$parameters .= "&environments=" . $this->environments;
-		}
-		if ($this->vehicles) {
-			$parameters .= "&vehicles=" . $this->vehicles;
-		}
-		if ($this->page) {
-			$parameters .= "&page=" . $this->page;
-		}
-		if ($this->mapLimit) {
-			$parameters .= "&limit=" . $this->mapLimit;
-		}
-		if (isset($this->unreleased)) {
-			$parameters .= "&unreleased=" . (int) $this->unreleased;
-		}
-		if ($this->mapGroup) {
-			$parameters .= "&mapgroup=" . $this->mapGroup;
-		}
-		if ($this->commentsMinLength) {
-			$parameters .= "&commentsminlength=" . $this->commentsMinLength;
-		}
-		if (isset($this->customScreenshot)) {
-			$parameters .= "&customscreenshot=" . $this->customScreenshot;
-		}
-		if ($this->minExeBuild) {
-			$parameters .= "&minexebuild=" . urlencode($this->minExeBuild);
-		}
-		if (isset($this->envMix)) {
-			$parameters .= "&envmix=" . (int) $this->envMix;
-		}
-		if (isset($this->ghostBlocks)) {
-			$parameters .= "&ghostblocks=" . (int) $this->ghostBlocks;
-		}
-		if (isset($this->embeddedObjects)) {
-			$parameters .= "&embeddedobjects=" . (int) $this->embeddedObjects;
-		}
-		if (isset($this->key)) {
-			$parameters .= "&key=" . $this->key;
-		}
-		if (isset($this->mp4)) {
-			$parameters .= "&mp4=" . $this->mp4;
+			$query['titlepack'] = $this->titlePack;
 		}
 
-		$asyncHttpRequest = new AsyncHttpRequest($this->maniaControl, $this->url . $parameters);
+		$mapTypes = $this->normalizeQueryValue($this->maniaScriptType);
+		if ($mapTypes) {
+			$query['maptype'] = $mapTypes;
+		}
+		if ($this->environments) {
+			$query['environment'] = $this->normalizeQueryValue($this->environments);
+		}
+		if ($this->page) {
+			$query['page'] = $this->page;
+		}
+		if ($this->mapLimit) {
+			$query['limit'] = $this->mapLimit;
+		}
+
+		return $query;
+	}
+
+	/**
+	 * Build the normalized cache key for the current search.
+	 *
+	 * @return string
+	 */
+	public function getCacheKey() {
+		return self::buildCacheKey($this->titlePrefix, $this->buildQuery());
+	}
+
+	/**
+	 * Build the normalized cache key for a query.
+	 *
+	 * @param string $titlePrefix
+	 * @param array  $query
+	 * @return string
+	 */
+	public static function buildCacheKey($titlePrefix, array $query) {
+		ksort($query);
+		return $titlePrefix . ':' . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+	}
+
+	/**
+	 * Execute an MX v2 query and retry once without maptype if it yields no results.
+	 *
+	 * @param array    $query
+	 * @param callable $function
+	 * @param bool     $allowMapTypeRetry
+	 */
+	private function fetchMapsByQuery(array $query, callable $function, $allowMapTypeRetry = true) {
+		$asyncHttpRequest = new AsyncHttpRequest($this->maniaControl, $this->url . '?' . http_build_query($query, '', '&', PHP_QUERY_RFC3986));
 		$asyncHttpRequest->setContentType(AsyncHttpRequest::CONTENT_TYPE_JSON);
-		$asyncHttpRequest->setCallable(function ($mapInfo, $error) use (&$function) {
+		$asyncHttpRequest->setCallable(function ($mapInfo, $error) use (&$function, $query, $allowMapTypeRetry) {
 			if ($error) {
 				trigger_error($error);
+				call_user_func($function, array(), $error);
 				return;
 			}
 
 			$mxMapList = json_decode($mapInfo);
 
-			if (!isset($mxMapList->results)) {
-				trigger_error('Cannot decode searched JSON data');
+			if (!isset($mxMapList->Results) || !is_array($mxMapList->Results)) {
+				$errorMessage = 'Cannot decode searched JSON data';
+				trigger_error($errorMessage);
+				call_user_func($function, array(), $errorMessage);
 				return;
 			}
 
-			$mxMapList = $mxMapList->results;
+			$mxMapList = $mxMapList->Results;
 
 			if ($mxMapList === null) {
-				trigger_error('Cannot decode searched JSON data');
+				$errorMessage = 'Cannot decode searched JSON data';
+				trigger_error($errorMessage);
+				call_user_func($function, array(), $errorMessage);
+				return;
+			}
+
+			if (empty($mxMapList) && $allowMapTypeRetry && isset($query['maptype'])) {
+				unset($query['maptype']);
+				$this->fetchMapsByQuery($query, $function, false);
 				return;
 			}
 
@@ -249,10 +266,76 @@ class ManiaExchangeMapSearch implements UsageInformationAble {
 				}
 			}
 
-			call_user_func($function, $maps);
+			call_user_func($function, $maps, null);
 		});
 
 		$asyncHttpRequest->getData();
+	}
+
+	/**
+	 * Normalize query values for MX v2 string filters.
+	 *
+	 * @param mixed $value
+	 * @return string|null
+	 */
+	private function normalizeQueryValue($value) {
+		if (is_array($value)) {
+			$value = array_filter($value, 'strlen');
+			if (empty($value)) {
+				return null;
+			}
+			return implode(',', $value);
+		}
+
+		if ($value === null || $value === '') {
+			return null;
+		}
+
+		return (string) $value;
+	}
+
+	/**
+	 * Resolve the best usable map type filter for MX v2.
+	 * MX returns no results for comma-separated maptype values, so if the mode exposes
+	 * multiple compatible types we fall back to the current map's single type.
+	 *
+	 * @param mixed $mapTypes
+	 * @return string|null
+	 */
+	private function resolvePreferredMapType($mapTypes) {
+		if (is_array($mapTypes)) {
+			$mapTypes = array_values(array_filter($mapTypes, 'strlen'));
+			if (count($mapTypes) === 1) {
+				return (string) $mapTypes[0];
+			}
+			return $this->getCurrentMapType();
+		}
+
+		if ($mapTypes === null || $mapTypes === '') {
+			return $this->getCurrentMapType();
+		}
+
+		$mapTypes = preg_split('/\s*,\s*/', (string) $mapTypes);
+		$mapTypes = array_values(array_filter($mapTypes, 'strlen'));
+		if (count($mapTypes) === 1) {
+			return (string) $mapTypes[0];
+		}
+
+		return $this->getCurrentMapType();
+	}
+
+	/**
+	 * Get the current map's single mode type when available.
+	 *
+	 * @return string|null
+	 */
+	private function getCurrentMapType() {
+		$currentMap = $this->maniaControl->getMapManager()->getCurrentMap();
+		if ($currentMap && !empty($currentMap->mapType)) {
+			return (string) $currentMap->mapType;
+		}
+
+		return null;
 	}
 
 

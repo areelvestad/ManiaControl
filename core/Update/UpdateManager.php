@@ -125,7 +125,7 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 	 */
 	public function checkCoreUpdateAsync($function) {
 		// ASSUMING LATEST RELEASE ALWAYS
-		$url = "https://api.github.com/repos/mmilja/ManiaControl/tags";
+		$url = "https://api.github.com/repos/areelvestad/ManiaControl/tags";
 
 		$asyncHttpRequest = new AsyncHttpRequest($this->maniaControl, $url);
 		$asyncHttpRequest->setContentType(AsyncHttpRequest::CONTENT_TYPE_JSON);

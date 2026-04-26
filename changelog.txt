@@ -1,3 +1,12 @@
+###v0.261###
+#Bug Fixes
+- fixed map list/search on very large servers
+- fixed map list paging, author filtering and repeated searches
+- fixed MX list/search for the current MX api
+
+#Changes
+- changed map search button text from "MapName" to "Map"
+
 ###v0.260###
 #Changes
 - Improve paging in map manager, for when there are more than 3 pages of results

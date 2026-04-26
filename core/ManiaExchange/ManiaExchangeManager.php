@@ -2,6 +2,9 @@
 
 namespace ManiaControl\ManiaExchange;
 
+use ManiaControl\Callbacks\CallbackListener;
+use ManiaControl\Callbacks\Callbacks;
+use ManiaControl\Callbacks\TimerListener;
 use ManiaControl\Files\AsyncHttpRequest;
 use ManiaControl\General\UsageInformationAble;
 use ManiaControl\General\UsageInformationTrait;
@@ -16,7 +19,7 @@ use ManiaControl\Maps\MapManager;
  * @copyright 2014-2020 ManiaControl Team
  * @license   http://www.gnu.org/licenses/ GNU General Public License, Version 3
  */
-class ManiaExchangeManager implements UsageInformationAble {
+class ManiaExchangeManager implements UsageInformationAble, CallbackListener, TimerListener {
 	use UsageInformationTrait;
 
 	/*
@@ -48,6 +51,9 @@ class ManiaExchangeManager implements UsageInformationAble {
 	const MIN_EXE_BUILD = "2014-04-01_00_00";
 
 	const SETTING_MX_KEY = "Mania exchange Key";
+	const SEARCH_CACHE_RETENTION = 86400;
+	const EMPTY_SEARCH_CACHE_RETENTION = 600;
+	const WARM_REFRESH_INTERVAL = 7200000;
 
 	/*
 	 * Private properties
@@ -55,6 +61,7 @@ class ManiaExchangeManager implements UsageInformationAble {
 	/** @var ManiaControl $maniaControl */
 	private $maniaControl  = null;
 	private $mxIdUidVector = array();
+	private $searchCache   = array();
 
 	/**
 	 * Construct map manager
@@ -63,8 +70,17 @@ class ManiaExchangeManager implements UsageInformationAble {
 	 */
 	public function __construct(ManiaControl $maniaControl) {
 		$this->maniaControl = $maniaControl;
+		$this->maniaControl->getCallbackManager()->registerCallbackListener(Callbacks::AFTERINIT, $this, 'handleAfterInit');
 
 		//$this->maniaControl->getSettingManager()->initSetting($this, self::SETTING_MX_KEY, "");
+	}
+
+	/**
+	 * Register periodic MX cache warming after startup.
+	 */
+	public function handleAfterInit() {
+		$this->refreshWarmNewestMapsCache();
+		$this->maniaControl->getTimerManager()->registerTimerListening($this, 'refreshWarmNewestMapsCache', self::WARM_REFRESH_INTERVAL);
 	}
 
 	/**
@@ -324,5 +340,155 @@ class ManiaExchangeManager implements UsageInformationAble {
 		}
 
 		$mapSearch->fetchMapsAsync($function);
+	}
+
+	/**
+	 * Get a cached MX search result entry if it is still retained.
+	 *
+	 * @param string $author
+	 * @param string $environment
+	 * @param string $searchString
+	 * @return array|null
+	 */
+	public function getSearchCacheEntry($author = '', $environment = '', $searchString = '') {
+		$this->pruneSearchCache();
+
+		$cacheKey = $this->getSearchCacheKey($author, $environment, $searchString);
+		if (!isset($this->searchCache[$cacheKey])) {
+			return null;
+		}
+
+		return $this->searchCache[$cacheKey];
+	}
+
+	/**
+	 * Get the cache key for an MX search.
+	 *
+	 * @param string $author
+	 * @param string $environment
+	 * @param string $searchString
+	 * @return string
+	 */
+	public function getSearchCacheKey($author = '', $environment = '', $searchString = '') {
+		return $this->buildSearch($author, $environment, $searchString)->getCacheKey();
+	}
+
+	/**
+	 * Fetch maps for the MX list/search flow and update the shared cache.
+	 *
+	 * @param string   $author
+	 * @param string   $environment
+	 * @param string   $searchString
+	 * @param callable $function
+	 * @return string
+	 */
+	public function fetchSearchMapsAsync($author = '', $environment = '', $searchString = '', callable $function) {
+		$mapSearch = $this->buildSearch($author, $environment, $searchString);
+		$cacheKey  = $mapSearch->getCacheKey();
+
+		$mapSearch->fetchMapsDetailedAsync(function (array $maps, $error = null) use (&$function, $cacheKey) {
+			$hash = null;
+			if ($error === null) {
+				$cacheEntry = $this->storeSearchCacheEntry($cacheKey, $maps);
+				$hash       = $cacheEntry['hash'];
+			}
+
+			call_user_func($function, $maps, $cacheKey, $hash, $error);
+		});
+
+		return $cacheKey;
+	}
+
+	/**
+	 * Periodically keep the default newest-maps query warm in cache.
+	 */
+	public function refreshWarmNewestMapsCache() {
+		$this->fetchSearchMapsAsync('', '', '', function (array $maps, $cacheKey, $hash, $error) {
+		});
+		$this->pruneSearchCache();
+	}
+
+	/**
+	 * Build a configured MX search for the current server context.
+	 *
+	 * @param string $author
+	 * @param string $environment
+	 * @param string $searchString
+	 * @return ManiaExchangeMapSearch
+	 */
+	private function buildSearch($author = '', $environment = '', $searchString = '') {
+		$mapSearch = new ManiaExchangeMapSearch($this->maniaControl);
+		$mapSearch->setAuthorName($author);
+		$mapSearch->setEnvironments($this->resolveEnvironment($environment));
+		$mapSearch->setMapName($searchString);
+		return $mapSearch;
+	}
+
+	/**
+	 * Resolve the default environment filter for TM servers.
+	 *
+	 * @param string $environment
+	 * @return string
+	 */
+	private function resolveEnvironment($environment) {
+		if ($environment !== '') {
+			return $environment;
+		}
+
+		$titleId = $this->maniaControl->getServer()->titleId;
+		$game    = explode('@', $titleId);
+		$env     = ManiaExchangeMapSearch::getEnvironment($game[0]);
+		if ($env > -1) {
+			return $env;
+		}
+
+		return '';
+	}
+
+	/**
+	 * Store a parsed MX result set in the in-memory cache.
+	 *
+	 * @param string     $cacheKey
+	 * @param MXMapInfo[] $maps
+	 * @return array
+	 */
+	private function storeSearchCacheEntry($cacheKey, array $maps) {
+		$entry = array(
+			'maps'      => $maps,
+			'hash'      => $this->buildSearchResultHash($maps),
+			'fetchedAt' => time(),
+			'isEmpty'   => empty($maps),
+		);
+
+		$this->searchCache[$cacheKey] = $entry;
+		return $entry;
+	}
+
+	/**
+	 * Build a stable hash for MX search results.
+	 *
+	 * @param MXMapInfo[] $maps
+	 * @return string
+	 */
+	private function buildSearchResultHash(array $maps) {
+		$hashParts = array();
+		foreach ($maps as $map) {
+			$hashParts[] = $map->id . ':' . $map->updated;
+		}
+
+		return sha1(implode('|', $hashParts));
+	}
+
+	/**
+	 * Prune retained cache entries.
+	 */
+	private function pruneSearchCache() {
+		$now = time();
+		foreach ($this->searchCache as $cacheKey => $entry) {
+			$retention = ($entry['isEmpty'] ? self::EMPTY_SEARCH_CACHE_RETENTION : self::SEARCH_CACHE_RETENTION);
+			if ($entry['fetchedAt'] + $retention < $now) {
+				unset($this->searchCache[$cacheKey]);
+			}
+		}
 	}
 }

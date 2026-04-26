@@ -210,12 +210,7 @@ class MapQueue implements CallbackListener, CommandListener, UsageInformationAbl
 			return;
 		}
 
-		$maps = array();
-		foreach ($this->queuedMaps as $queuedMap) {
-			array_push($maps, $queuedMap[1]);
-		}
-
-		$this->maniaControl->getMapManager()->getMapList()->showMapList($player, $maps);
+		$this->maniaControl->getMapManager()->getMapList()->showQueueMapList($player);
 	}
 
 	/**
@@ -523,6 +518,19 @@ class MapQueue implements CallbackListener, CommandListener, UsageInformationAbl
 			$index++;
 		}
 		return $queuedMaps;
+	}
+
+	/**
+	 * Return the queued maps as a plain ordered map list
+	 *
+	 * @return Map[]
+	 */
+	public function getQueuedMapList() {
+		$maps = array();
+		foreach ($this->queuedMaps as $queuedMap) {
+			$maps[] = $queuedMap[1];
+		}
+		return $maps;
 	}
 
 	/**

@@ -118,9 +118,11 @@ class StyleManager implements UsageInformationAble {
 	 * @param      $actionMapNameSearch
 	 * @param      $actionAuthorSearch
 	 * @param null $actionReset
+	 * @param string $mapButtonLabel
+	 * @param string $authorButtonLabel
 	 * @return \FML\Controls\Frame
 	 */
-	public function getDefaultMapSearch($actionMapNameSearch, $actionAuthorSearch, $actionReset = null) {
+	public function getDefaultMapSearch($actionMapNameSearch, $actionAuthorSearch, $actionReset = null, $mapButtonLabel = 'Map', $authorButtonLabel = 'Author') {
 		$width = $this->getListWidgetsWidth();
 
 		$frame = new Frame();
@@ -154,7 +156,7 @@ class StyleManager implements UsageInformationAble {
 
 		//Search for Map-Name
 		$mapNameButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
-			'MapName',
+			$mapButtonLabel,
 			18,
 			5,
 			$actionMapNameSearch
@@ -164,7 +166,7 @@ class StyleManager implements UsageInformationAble {
 
 		//Search for Author
 		$authorButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
-			'Author',
+			$authorButtonLabel,
 			18,
 			5,
 			$actionAuthorSearch

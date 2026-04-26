@@ -58,7 +58,19 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	const MAX_MAPS_PER_PAGE          = 13;
 	const MAX_PAGES_PER_CHUNK        = 2;
 	const DEFAULT_CUSTOM_VOTE_PLUGIN = 'MCTeam\CustomVotesPlugin';
+	const DEFAULT_KARMA_PLUGIN       = 'MCTeam\KarmaPlugin';
 	const CACHE_CURRENT_PAGE         = 'CurrentPage';
+	const CACHE_VIEW_MODE            = 'ViewMode';
+	const CACHE_VIEW_VALUE           = 'ViewValue';
+	const VIEW_ALL                   = 'all';
+	const VIEW_SEARCH_MAP_NAME       = 'search_map_name';
+	const VIEW_SEARCH_AUTHOR         = 'search_author';
+	const VIEW_AUTHOR_LOGIN          = 'author_login';
+	const VIEW_KARMA_BEST            = 'karma_best';
+	const VIEW_KARMA_WORST           = 'karma_worst';
+	const VIEW_DATE_NEWEST           = 'date_newest';
+	const VIEW_DATE_OLDEST           = 'date_oldest';
+	const VIEW_QUEUE                 = 'queue';
 	const WIDGET_NAME                = 'MapList';
 
 	/*
@@ -67,8 +79,6 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	/** @var ManiaControl $maniaControl */
 	private $maniaControl = null;
 
-	/** @var Array(Map) $searchedMapList */
-	private $searchedMapList = null;
 	/**
 	 * Construct a new map list instance
 	 *
@@ -116,7 +126,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		$this->maniaControl->getMapManager()->getMXManager()->fetchManiaExchangeMapInformation();
 
 		// Reshow the Maplist
-		$this->showMapList($player);
+		$this->showCurrentView($player);
 	}
 
 	/**
@@ -127,31 +137,202 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	 * @param int    $pageIndex
 	 */
 	public function showMapList(Player $player, $mapList = null, $pageIndex = -1) {
+		if (is_array($mapList)) {
+			$this->clearListState($player);
+			$this->renderMapList($player, $mapList, ($pageIndex < 0 ? 0 : $pageIndex));
+			return;
+		}
+
+		$this->showFullMapList($player, $pageIndex);
+	}
+
+	/**
+	 * Display the default full map list
+	 *
+	 * @param Player $player
+	 * @param int    $pageIndex
+	 */
+	public function showFullMapList(Player $player, $pageIndex = 0) {
+		$this->setListState($player, self::VIEW_ALL);
+		$this->showCurrentView($player, $pageIndex);
+	}
+
+	/**
+	 * Display the currently active map list view
+	 *
+	 * @param Player $player
+	 * @param int    $pageIndex
+	 */
+	public function showCurrentView(Player $player, $pageIndex = -1) {
+		if (!$player->getCache($this, self::CACHE_VIEW_MODE)) {
+			$this->setListState($player, self::VIEW_ALL);
+			if ($pageIndex < 0) {
+				$pageIndex = 0;
+			}
+		}
+
+		$this->renderMapList($player, $this->buildActiveMapList($player), $pageIndex);
+	}
+
+	/**
+	 * Display a map-name search result list
+	 *
+	 * @param Player $player
+	 * @param string $searchString
+	 * @param int    $pageIndex
+	 */
+	public function showMapNameSearchList(Player $player, $searchString, $pageIndex = 0) {
+		$searchString = trim((string) $searchString);
+		if ($searchString === '') {
+			$this->showFullMapList($player, 0);
+			return;
+		}
+
+		$this->setListState($player, self::VIEW_SEARCH_MAP_NAME, $searchString);
+		$this->showCurrentView($player, $pageIndex);
+	}
+
+	/**
+	 * Display an author search result list
+	 *
+	 * @param Player $player
+	 * @param string $searchString
+	 * @param int    $pageIndex
+	 */
+	public function showAuthorSearchList(Player $player, $searchString, $pageIndex = 0) {
+		$searchString = trim((string) $searchString);
+		if ($searchString === '') {
+			$this->showFullMapList($player, 0);
+			return;
+		}
+
+		$this->setListState($player, self::VIEW_SEARCH_AUTHOR, $searchString);
+		$this->showCurrentView($player, $pageIndex);
+	}
+
+	/**
+	 * Display all maps from one exact author login
+	 *
+	 * @param Player $player
+	 * @param string $authorLogin
+	 * @param int    $pageIndex
+	 */
+	public function showAuthorMapList(Player $player, $authorLogin, $pageIndex = 0) {
+		$mapList = $this->buildAuthorMapList($authorLogin);
+		if (empty($mapList)) {
+			$this->maniaControl->getChat()->sendError('There are no maps to show!', $player->login);
+			return;
+		}
+
+		$this->setListState($player, self::VIEW_AUTHOR_LOGIN, $authorLogin);
+		$this->renderMapList($player, $mapList, $pageIndex);
+	}
+
+	/**
+	 * Display the map list sorted by karma
+	 *
+	 * @param Player $player
+	 * @param bool   $best
+	 * @param int    $pageIndex
+	 * @return bool
+	 */
+	public function showKarmaMapList(Player $player, $best, $pageIndex = 0) {
+		if (!$this->maniaControl->getPluginManager()->getPlugin(self::DEFAULT_KARMA_PLUGIN)) {
+			$this->maniaControl->getChat()->sendError('KarmaPlugin is not enabled!', $player->login);
+			return false;
+		}
+
+		$this->setListState($player, ($best ? self::VIEW_KARMA_BEST : self::VIEW_KARMA_WORST));
+		$this->showCurrentView($player, $pageIndex);
+		return true;
+	}
+
+	/**
+	 * Display the map list sorted by date
+	 *
+	 * @param Player $player
+	 * @param bool   $newest
+	 * @param int    $pageIndex
+	 */
+	public function showDateMapList(Player $player, $newest, $pageIndex = 0) {
+		$this->setListState($player, ($newest ? self::VIEW_DATE_NEWEST : self::VIEW_DATE_OLDEST));
+		$this->showCurrentView($player, $pageIndex);
+	}
+
+	/**
+	 * Display the queue as a map list
+	 *
+	 * @param Player $player
+	 * @param int    $pageIndex
+	 */
+	public function showQueueMapList(Player $player, $pageIndex = 0) {
+		$this->setListState($player, self::VIEW_QUEUE);
+		$this->showCurrentView($player, $pageIndex);
+	}
+
+	/**
+	 * Build the active list for the player's current view state
+	 *
+	 * @param Player $player
+	 * @return array
+	 */
+	private function buildActiveMapList(Player $player) {
+		$mode  = $player->getCache($this, self::CACHE_VIEW_MODE);
+		$value = $player->getCache($this, self::CACHE_VIEW_VALUE);
+
+		switch ($mode) {
+			case self::VIEW_SEARCH_MAP_NAME:
+				return $this->maniaControl->getMapManager()->searchMapsByMapName($value);
+			case self::VIEW_SEARCH_AUTHOR:
+				return $this->maniaControl->getMapManager()->searchMapsByAuthor($value);
+			case self::VIEW_AUTHOR_LOGIN:
+				return $this->buildAuthorMapList($value);
+			case self::VIEW_KARMA_BEST:
+				return $this->buildKarmaMapList(true);
+			case self::VIEW_KARMA_WORST:
+				return $this->buildKarmaMapList(false);
+			case self::VIEW_DATE_NEWEST:
+				return $this->buildDateMapList(true);
+			case self::VIEW_DATE_OLDEST:
+				return $this->buildDateMapList(false);
+			case self::VIEW_QUEUE:
+				return $this->maniaControl->getMapManager()->getMapQueue()->getQueuedMapList();
+			case self::VIEW_ALL:
+			default:
+				return $this->maniaControl->getMapManager()->getMaps();
+		}
+	}
+
+	/**
+	 * Render the given map list
+	 *
+	 * @param Player $player
+	 * @param Map[]  $mapList
+	 * @param int    $pageIndex
+	 */
+	private function renderMapList(Player $player, array $mapList, $pageIndex = -1) {
 		$width   = $this->maniaControl->getManialinkManager()->getStyleManager()->getListWidgetsWidth();
 		$height  = $this->maniaControl->getManialinkManager()->getStyleManager()->getListWidgetsHeight();
 		$buttonY = -$height / 2 + 9;
+		$totalMapsCount = count($mapList);
+		$pagesCount     = max(1, (int) ceil($totalMapsCount / self::MAX_MAPS_PER_PAGE));
 
 		if ($pageIndex < 0) {
-			$pageIndex = (int) $player->getCache($this, self::CACHE_CURRENT_PAGE);
+			$cachedPage = $player->getCache($this, self::CACHE_CURRENT_PAGE);
+			$pageIndex  = ($cachedPage === null ? 0 : (int) $cachedPage);
+		}
+		if ($pageIndex > $pagesCount - 1) {
+			$pageIndex = $pagesCount - 1;
+		}
+		if ($pageIndex < 0) {
+			$pageIndex = 0;
 		}
 		$player->setCache($this, self::CACHE_CURRENT_PAGE, $pageIndex);
 		$queueBuffer = $this->maniaControl->getMapManager()->getMapQueue()->getQueueBuffer();
 
-		$chunkIndex     = $this->getChunkIndexFromPageNumber($pageIndex);
+		$chunkIndex     = $this->getChunkIndexFromPageNumber($pageIndex, $totalMapsCount);
 		$mapsBeginIndex = $this->getChunkMapsBeginIndex($chunkIndex);
-
-		// Get Maps
-		if (!is_array($mapList)) {
-			$this->searchedMapList = null;
-			$mapList = $this->maniaControl->getMapManager()->getMaps();
-		} else {
-			//Store the mapList for paging
-			$this->searchedMapList = $mapList; 
-		}
-		$totalMapsCount = count($mapList);
 		$mapList = array_slice($mapList, $mapsBeginIndex, self::MAX_PAGES_PER_CHUNK * self::MAX_MAPS_PER_PAGE);
-
-		$pagesCount     = ceil($totalMapsCount / self::MAX_MAPS_PER_PAGE);
 
 		// Create ManiaLink
 		$maniaLink = new ManiaLink(ManialinkManager::MAIN_MLID);
@@ -190,11 +371,11 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 			$mxCheckForUpdatesButton->setPosition($width/2 - 5 - 30 - 5 - 36/2, $buttonY);
 		}
 
-		if ($this->maniaControl->getAuthenticationManager()->checkPermission($player, MapManager::SETTING_PERMISSION_ADD_MAP)) {
-			$browserButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
-				'Directory Browser',
-				36,
-				4,
+			if ($this->maniaControl->getAuthenticationManager()->checkPermission($player, MapManager::SETTING_PERMISSION_ADD_MAP)) {
+				$browserButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
+					'Directory Browser',
+					36,
+					4,
 				DirectoryBrowser::ACTION_SHOW
 			);
 			$frame->addChild($browserButton);
@@ -238,6 +419,15 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		$mxIconHover      = $this->maniaControl->getManialinkManager()->getIconManager()->getIcon(IconManager::MX_ICON_MOVER);
 		$mxIconGreen      = $this->maniaControl->getManialinkManager()->getIconManager()->getIcon(IconManager::MX_ICON_GREEN);
 		$mxIconGreenHover = $this->maniaControl->getManialinkManager()->getIconManager()->getIcon(IconManager::MX_ICON_GREEN_MOVER);
+
+		if (empty($mapList)) {
+			$emptyLabel = new Label();
+			$frame->addChild($emptyLabel);
+			$emptyLabel->setY(20);
+			$emptyLabel->setTextColor('aaa');
+			$emptyLabel->setText('No maps found.');
+			$emptyLabel->setTranslate(true);
+		}
 
 		foreach ($mapList as $map) {
 			/** @var Map $map */
@@ -455,11 +645,11 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	 * Get the Chunk Index with the given Page Index
 	 *
 	 * @param int $pageIndex
+	 * @param int $mapsCount
 	 * @return int
 	 */
-	private function getChunkIndexFromPageNumber($pageIndex) {
-		$mapsCount  = $this->maniaControl->getMapManager()->getMapsCount();
-		$pagesCount = ceil($mapsCount / self::MAX_MAPS_PER_PAGE);
+	private function getChunkIndexFromPageNumber($pageIndex, $mapsCount) {
+		$pagesCount = max(1, (int) ceil($mapsCount / self::MAX_MAPS_PER_PAGE));
 		if ($pageIndex > $pagesCount - 1) {
 			$pageIndex = $pagesCount - 1;
 		}
@@ -474,6 +664,113 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	 */
 	private function getChunkMapsBeginIndex($chunkIndex) {
 		return $chunkIndex * self::MAX_PAGES_PER_CHUNK * self::MAX_MAPS_PER_PAGE;
+	}
+
+	/**
+	 * Set the active list state for a player
+	 *
+	 * @param Player      $player
+	 * @param string      $mode
+	 * @param string|null $value
+	 */
+	private function setListState(Player $player, $mode, $value = null) {
+		$player->setCache($this, self::CACHE_VIEW_MODE, $mode);
+		if ($value === null || $value === '') {
+			$player->destroyCache($this, self::CACHE_VIEW_VALUE);
+		} else {
+			$player->setCache($this, self::CACHE_VIEW_VALUE, $value);
+		}
+		$player->destroyCache($this, self::CACHE_CURRENT_PAGE);
+	}
+
+	/**
+	 * Clear all cached list state for a player
+	 *
+	 * @param Player $player
+	 */
+	private function clearListState(Player $player) {
+		$player->destroyCache($this, self::CACHE_CURRENT_PAGE);
+		$player->destroyCache($this, self::CACHE_VIEW_MODE);
+		$player->destroyCache($this, self::CACHE_VIEW_VALUE);
+	}
+
+	/**
+	 * Build a list of maps from one author login
+	 *
+	 * @param string $authorLogin
+	 * @return array
+	 */
+	private function buildAuthorMapList($authorLogin) {
+		return $this->maniaControl->getMapManager()->getMapsByAuthorLogin($authorLogin);
+	}
+
+	/**
+	 * Build a karma-sorted map list
+	 *
+	 * @param bool $best
+	 * @return array
+	 */
+	private function buildKarmaMapList($best) {
+		/** @var KarmaPlugin $karmaPlugin */
+		$karmaPlugin = $this->maniaControl->getPluginManager()->getPlugin(self::DEFAULT_KARMA_PLUGIN);
+		$maps        = $this->maniaControl->getMapManager()->getMaps();
+		if (!$karmaPlugin) {
+			return $maps;
+		}
+
+		$mapList = array();
+		foreach ($maps as $map) {
+			if (!$map instanceof Map) {
+				continue;
+			}
+
+			if ($this->maniaControl->getSettingManager()->getSettingValue($karmaPlugin, $karmaPlugin::SETTING_NEWKARMA) === true) {
+				$karma      = $karmaPlugin->getMapKarma($map);
+				$map->karma = round($karma * 100.);
+			} else {
+				$votes = $karmaPlugin->getMapVotes($map);
+				$min   = 0;
+				$plus  = 0;
+				foreach ($votes as $vote) {
+					if (!isset($vote->vote) || $vote->vote === 0.5) {
+						continue;
+					}
+					if ($vote->vote < 0.5) {
+						$min += $vote->count;
+					} else {
+						$plus += $vote->count;
+					}
+				}
+				$map->karma = $plus - $min;
+			}
+
+			$mapList[] = $map;
+		}
+
+		usort($mapList, function (Map $mapA, Map $mapB) {
+			return ($mapA->karma - $mapB->karma);
+		});
+		if ($best) {
+			$mapList = array_reverse($mapList);
+		}
+		return $mapList;
+	}
+
+	/**
+	 * Build a date-sorted map list
+	 *
+	 * @param bool $newest
+	 * @return array
+	 */
+	private function buildDateMapList($newest) {
+		$maps = $this->maniaControl->getMapManager()->getMaps();
+		usort($maps, function (Map $mapA, Map $mapB) {
+			return ($mapA->index - $mapB->index);
+		});
+		if ($newest) {
+			$maps = array_reverse($maps);
+		}
+		return $maps;
 	}
 
 	/**
@@ -546,7 +843,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	public function handleWidgetOpened(Player $player, $openedWidget) {
 		// unset when another main widget got opened
 		if ($openedWidget !== self::WIDGET_NAME) {
-			$player->destroyCache($this, self::CACHE_CURRENT_PAGE);
+			$this->clearListState($player);
 		}
 	}
 
@@ -557,7 +854,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	 */
 	public function closeWidget(Player $player) {
 		// TODO: resolve duplicate with 'playerCloseWidget'
-		$player->destroyCache($this, self::CACHE_CURRENT_PAGE);
+		$this->clearListState($player);
 	}
 
 	/**
@@ -580,7 +877,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		switch ($action) {
 			case self::ACTION_UPDATE_MAP:
 				$this->maniaControl->getMapManager()->updateMap($player, $mapUid);
-				$this->showMapList($player);
+				$this->showCurrentView($player);
 				break;
 			case self::ACTION_REMOVE_MAP:
 				try {
@@ -651,17 +948,17 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 				break;
 			case self::ACTION_QUEUED_MAP:
 				$this->maniaControl->getMapManager()->getMapQueue()->addMapToMapQueue($callback[1][1], $mapUid);
-				$this->showMapList($player);
+				$this->showCurrentView($player);
 				break;
 			case self::ACTION_UNQUEUE_MAP:
 				$this->maniaControl->getMapManager()->getMapQueue()->removeFromMapQueue($player, $mapUid);
-				$this->showMapList($player);
+				$this->showCurrentView($player);
 				break;
 			default:
 				if (substr($actionId, 0, strlen(self::ACTION_PAGING_CHUNKS)) === self::ACTION_PAGING_CHUNKS) {
 					// Paging chunks
 					$neededPage = (int) substr($actionId, strlen(self::ACTION_PAGING_CHUNKS));
-					$this->showMapList($player, $this->searchedMapList, $neededPage - 1);
+					$this->showCurrentView($player, $neededPage - 1);
 				}
 				break;
 		}
@@ -676,7 +973,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	public function resetMapList(array $callback) {
 		$login  = $callback[1][1];
 		$player = $this->maniaControl->getPlayerManager()->getPlayer($login);
-		$this->showMapList($player);
+		$this->showFullMapList($player);
 	}
 
 	/**
@@ -689,15 +986,12 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		$login  = $callback[1][1];
 		$player = $this->maniaControl->getPlayerManager()->getPlayer($login);
 
-		$searchString = $callback[1][3][0]['Value'];
-
-		if ($searchString) {
-			$maps = $this->maniaControl->getMapManager()->searchMapsByMapName($searchString);
-		} else {
-			$maps = null;
+		$searchString = '';
+		if (isset($callback[1][3][0]['Value'])) {
+			$searchString = $callback[1][3][0]['Value'];
 		}
-		$this->showMapList($player, $maps);
 
+		$this->showMapNameSearchList($player, $searchString);
 	}
 
 	/**
@@ -710,14 +1004,12 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		$login  = $callback[1][1];
 		$player = $this->maniaControl->getPlayerManager()->getPlayer($login);
 
-		$searchString = $callback[1][3][0]['Value'];
-		if ($searchString) {
-			$maps = $this->maniaControl->getMapManager()->searchMapsByAuthor($searchString);
-		} else {
-			$maps = null;
+		$searchString = '';
+		if (isset($callback[1][3][0]['Value'])) {
+			$searchString = $callback[1][3][0]['Value'];
 		}
 
-		$this->showMapList($player, $maps);
+		$this->showAuthorSearchList($player, $searchString);
 	}
 
 	/**
@@ -726,7 +1018,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	 * @param Player $player
 	 */
 	public function playerCloseWidget(Player $player) {
-		$player->destroyCache($this, self::CACHE_CURRENT_PAGE);
+		$this->clearListState($player);
 		$this->maniaControl->getManialinkManager()->closeWidget($player);
 	}
 
@@ -738,8 +1030,8 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		foreach ($players as $player) {
 			$currentPage = $player->getCache($this, self::CACHE_CURRENT_PAGE);
 			if ($currentPage !== null) {
-				$this->showMapList($player, null, $currentPage);
+				$this->showCurrentView($player, (int) $currentPage);
 			}
 		}
 	}
-} 
+}
