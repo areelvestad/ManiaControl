@@ -1,3 +1,5 @@
+Fork of a fork of ManiaControl. I'm not smart, so maybe this explode servers.
+
 ManiaControl
 ============
 
