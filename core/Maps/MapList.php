@@ -54,9 +54,12 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	const ACTION_PAGING_CHUNKS       = 'MapList.PagingChunk.';
 	const ACTION_SEARCH_MAP_NAME     = 'MapList.SearchMapName';
 	const ACTION_SEARCH_AUTHOR       = 'MapList.SearchAuthor';
+	const ACTION_SHOW_FAVORITES      = 'MapList.ShowFavorites';
+	const ACTION_ADD_FAVORITE        = 'MapList.AddFavorite';
+	const ACTION_REMOVE_FAVORITE     = 'MapList.RemoveFavorite';
 	const ACTION_RESET               = 'MapList.ResetMapList';
 	const MAX_MAPS_PER_PAGE          = 13;
-	const MAX_PAGES_PER_CHUNK        = 2;
+	const MAX_PAGES_PER_CHUNK        = 1;
 	const DEFAULT_CUSTOM_VOTE_PLUGIN = 'MCTeam\CustomVotesPlugin';
 	const DEFAULT_KARMA_PLUGIN       = 'MCTeam\KarmaPlugin';
 	const CACHE_CURRENT_PAGE         = 'CurrentPage';
@@ -71,6 +74,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	const VIEW_DATE_NEWEST           = 'date_newest';
 	const VIEW_DATE_OLDEST           = 'date_oldest';
 	const VIEW_QUEUE                 = 'queue';
+	const VIEW_FAVORITES             = 'favorites';
 	const WIDGET_NAME                = 'MapList';
 
 	/*
@@ -100,6 +104,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		$this->maniaControl->getManialinkManager()->registerManialinkPageAnswerListener(self::ACTION_CLEAR_MAPQUEUE, $this, 'clearMapQueue');
 		$this->maniaControl->getManialinkManager()->registerManialinkPageAnswerListener(self::ACTION_SEARCH_MAP_NAME, $this, 'searchByMapName');
 		$this->maniaControl->getManialinkManager()->registerManialinkPageAnswerListener(self::ACTION_SEARCH_AUTHOR, $this, 'searchByAuthor');
+		$this->maniaControl->getManialinkManager()->registerManialinkPageAnswerListener(self::ACTION_SHOW_FAVORITES, $this, 'showFavorites');
 		$this->maniaControl->getManialinkManager()->registerManialinkPageAnswerListener(self::ACTION_RESET, $this, 'resetMapList');
 
 	}
@@ -271,6 +276,17 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	}
 
 	/**
+	 * Display the player's favorite maps.
+	 *
+	 * @param Player $player
+	 * @param int    $pageIndex
+	 */
+	public function showFavoriteMapList(Player $player, $pageIndex = 0) {
+		$this->setListState($player, self::VIEW_FAVORITES);
+		$this->showCurrentView($player, $pageIndex);
+	}
+
+	/**
 	 * Build the active list for the player's current view state
 	 *
 	 * @param Player $player
@@ -297,6 +313,8 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 				return $this->buildDateMapList(false);
 			case self::VIEW_QUEUE:
 				return $this->maniaControl->getMapManager()->getMapQueue()->getQueuedMapList();
+			case self::VIEW_FAVORITES:
+				return $this->maniaControl->getMapManager()->getMapFavorites()->getFavoriteMaps($player);
 			case self::VIEW_ALL:
 			default:
 				return $this->maniaControl->getMapManager()->getMaps();
@@ -371,15 +389,28 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 			$mxCheckForUpdatesButton->setPosition($width/2 - 5 - 30 - 5 - 36/2, $buttonY);
 		}
 
-			if ($this->maniaControl->getAuthenticationManager()->checkPermission($player, MapManager::SETTING_PERMISSION_ADD_MAP)) {
-				$browserButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
-					'Directory Browser',
-					36,
+		if ($this->maniaControl->getAuthenticationManager()->checkPermission($player, MapManager::SETTING_PERMISSION_ADD_MAP)) {
+			$browserButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
+				'Directory Browser',
+				36,
 					4,
 				DirectoryBrowser::ACTION_SHOW
 			);
 			$frame->addChild($browserButton);
 			$browserButton->setPosition(-$width/2 + 5 + 36/2, $buttonY);
+		}
+
+		$favoriteMapsButton = $this->maniaControl->getManialinkManager()->getElementBuilder()->buildRoundTextButton(
+			'Favourite Maps',
+			30,
+			4,
+			self::ACTION_SHOW_FAVORITES
+		);
+		$frame->addChild($favoriteMapsButton);
+		if ($this->maniaControl->getAuthenticationManager()->checkPermission($player, MapManager::SETTING_PERMISSION_ADD_MAP)) {
+			$favoriteMapsButton->setPosition(-$width / 2 + 5 + 36 + 5 + 30 / 2, $buttonY);
+		} else {
+			$favoriteMapsButton->setPosition(-$width / 2 + 5 + 30 / 2, $buttonY);
 		}
 
 		// Headline
@@ -405,6 +436,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		$frame->addChild($descriptionLabel);
 
 		$queuedMaps = $this->maniaControl->getMapManager()->getMapQueue()->getQueuedMapsRanking();
+		$favoriteMapUidLookup = $this->maniaControl->getMapManager()->getMapFavorites()->getFavoriteMapUidLookup($player);
 
 		$pageNumber = 1 + $chunkIndex * self::MAX_PAGES_PER_CHUNK;
 		$paging->setStartPageNumber($pageIndex + 1);
@@ -425,7 +457,7 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 			$frame->addChild($emptyLabel);
 			$emptyLabel->setY(20);
 			$emptyLabel->setTextColor('aaa');
-			$emptyLabel->setText('No maps found.');
+			$emptyLabel->setText($this->getEmptyListMessage($player));
 			$emptyLabel->setTranslate(true);
 		}
 
@@ -515,6 +547,24 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 			$labelLine->render();
 
 			// TODO action detailed map info including mx info
+
+			$favoriteLabel = new Label_Button();
+			$mapFrame->addChild($favoriteLabel);
+			$favoriteLabel->setX($width / 2 - 17);
+			$favoriteLabel->setZ(0.2);
+			$favoriteLabel->setSize(3, 3);
+			$favoriteLabel->setTextSize(1.5);
+			$favoriteLabel->setText('★');
+			if (isset($favoriteMapUidLookup[$map->uid])) {
+				$favoriteLabel->setTextColor('ff0');
+				$favoriteLabel->setAction(self::ACTION_REMOVE_FAVORITE . '.' . $map->uid);
+				$description = 'Remove ' . $map->getEscapedName() . ' from your favorite maps';
+			} else {
+				$favoriteLabel->setTextColor('888');
+				$favoriteLabel->setAction(self::ACTION_ADD_FAVORITE . '.' . $map->uid);
+				$description = 'Add ' . $map->getEscapedName() . ' to your favorite maps';
+			}
+			$favoriteLabel->addTooltipLabelFeature($descriptionLabel, $description);
 
 			// Map-Queue-Map-Label
 			if (isset($queuedMaps[$map->uid])) {
@@ -774,6 +824,20 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	}
 
 	/**
+	 * Get the empty message for the currently active view.
+	 *
+	 * @param Player $player
+	 * @return string
+	 */
+	private function getEmptyListMessage(Player $player) {
+		$mode = $player->getCache($this, self::CACHE_VIEW_MODE);
+		if ($mode === self::VIEW_FAVORITES) {
+			return 'No favorite maps found.';
+		}
+		return 'No maps found.';
+	}
+
+	/**
 	 * Builds the confirmation frame
 	 *
 	 * @param ManiaLink $maniaLink
@@ -877,6 +941,20 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		switch ($action) {
 			case self::ACTION_UPDATE_MAP:
 				$this->maniaControl->getMapManager()->updateMap($player, $mapUid);
+				$this->showCurrentView($player);
+				break;
+			case self::ACTION_ADD_FAVORITE:
+				$map = $this->maniaControl->getMapManager()->getMapByUid($mapUid);
+				if ($map) {
+					$this->maniaControl->getMapManager()->getMapFavorites()->addFavorite($player, $map);
+				}
+				$this->showCurrentView($player);
+				break;
+			case self::ACTION_REMOVE_FAVORITE:
+				$map = $this->maniaControl->getMapManager()->getMapByUid($mapUid);
+				if ($map) {
+					$this->maniaControl->getMapManager()->getMapFavorites()->removeFavorite($player, $map);
+				}
 				$this->showCurrentView($player);
 				break;
 			case self::ACTION_REMOVE_MAP:
@@ -1010,6 +1088,16 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 		}
 
 		$this->showAuthorSearchList($player, $searchString);
+	}
+
+	/**
+	 * Listener for opening the favorite maps view.
+	 *
+	 * @param array  $callback
+	 * @param Player $player
+	 */
+	public function showFavorites(array $callback, Player $player) {
+		$this->showFavoriteMapList($player);
 	}
 
 	/**

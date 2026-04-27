@@ -77,6 +77,9 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	/** @var MapList $mapList */
 	private $mapList = null;
 
+	/** @var MapFavorites $mapFavorites */
+	private $mapFavorites = null;
+
 	/** @var DirectoryBrowser $directoryBrowser */
 	private $directoryBrowser = null;
 
@@ -105,6 +108,7 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 		$this->initTables();
 
 		// Children
+		$this->mapFavorites     = new MapFavorites($this->maniaControl);
 		$this->mxManager        = new ManiaExchangeManager($this->maniaControl);
 		$this->mapList          = new MapList($this->maniaControl);
 		$this->directoryBrowser = new DirectoryBrowser($this->maniaControl);
@@ -161,6 +165,15 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	 */
 	public function getMapList() {
 		return $this->mapList;
+	}
+
+	/**
+	 * Return the map favorites helper.
+	 *
+	 * @return MapFavorites
+	 */
+	public function getMapFavorites() {
+		return $this->mapFavorites;
 	}
 
 	/**
