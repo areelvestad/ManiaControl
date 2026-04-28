@@ -284,6 +284,17 @@ class MapList implements ManialinkPageAnswerListener, CallbackListener {
 	public function showFavoriteMapList(Player $player, $pageIndex = 0) {
 		$this->setListState($player, self::VIEW_FAVORITES);
 		$this->showCurrentView($player, $pageIndex);
+		$this->maniaControl->getMapManager()->getMapFavoritesSync()->pullFavoritesOnOpen($player);
+	}
+
+	/**
+	 * Check whether the player is currently looking at the favorites view.
+	 *
+	 * @param Player $player
+	 * @return bool
+	 */
+	public function isFavoriteViewActive(Player $player) {
+		return ($player->getCache($this, self::CACHE_VIEW_MODE) === self::VIEW_FAVORITES);
 	}
 
 	/**
