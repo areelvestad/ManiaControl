@@ -19,6 +19,7 @@ use ManiaControl\ManiaExchange\ManiaExchangeList;
 use ManiaControl\ManiaExchange\ManiaExchangeManager;
 use ManiaControl\ManiaExchange\MXMapInfo;
 use ManiaControl\Players\Player;
+use ManiaControl\Players\PlayerManager;
 use ManiaControl\Utils\Formatter;
 use Maniaplanet\DedicatedServer\InvalidArgumentException;
 use Maniaplanet\DedicatedServer\Xmlrpc\AlreadyInListException;
@@ -77,6 +78,12 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	/** @var MapList $mapList */
 	private $mapList = null;
 
+	/** @var MapFavorites $mapFavorites */
+	private $mapFavorites = null;
+
+	/** @var MapFavoritesSync $mapFavoritesSync */
+	private $mapFavoritesSync = null;
+
 	/** @var DirectoryBrowser $directoryBrowser */
 	private $directoryBrowser = null;
 
@@ -105,6 +112,8 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 		$this->initTables();
 
 		// Children
+		$this->mapFavorites     = new MapFavorites($this->maniaControl);
+		$this->mapFavoritesSync = new MapFavoritesSync($this->maniaControl, $this);
 		$this->mxManager        = new ManiaExchangeManager($this->maniaControl);
 		$this->mapList          = new MapList($this->maniaControl);
 		$this->directoryBrowser = new DirectoryBrowser($this->maniaControl);
@@ -117,6 +126,8 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(Callbacks::ONINIT, $this, 'handleOnInit');
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(Callbacks::AFTERINIT, $this, 'handleAfterInit');
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(CallbackManager::CB_MP_MAPLISTMODIFIED, $this, 'mapsModified');
+		$this->maniaControl->getCallbackManager()->registerCallbackListener(PlayerManager::CB_PLAYERCONNECT, $this->mapFavoritesSync, 'handlePlayerConnect');
+		$this->maniaControl->getTimerManager()->registerTimerListening($this->mapFavoritesSync, 'handleSyncTimer', 5000);
 
 		// Permissions
 		$this->maniaControl->getAuthenticationManager()->definePermissionLevel(self::SETTING_PERMISSION_ADD_MAP, AuthenticationManager::AUTH_LEVEL_ADMIN);
@@ -131,6 +142,7 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 		$this->maniaControl->getSettingManager()->initSetting($this, self::SETTING_AUTOSAVE_MAPLIST, true);
 		$this->maniaControl->getSettingManager()->initSetting($this, self::SETTING_MAPLIST_FILE, "MatchSettings/tracklist.txt");
 		$this->maniaControl->getSettingManager()->initSetting($this, self::SETTING_WRITE_OWN_MAPLIST_FILE, false);
+		$this->maniaControl->getSettingManager()->initSetting($this, MapFavoritesSync::SETTING_GLOBAL_FAVORITES_ENABLED, true);
 
 		//Initlaize Communication Listenings
 		$this->initalizeCommunicationListenings();
@@ -161,6 +173,24 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	 */
 	public function getMapList() {
 		return $this->mapList;
+	}
+
+	/**
+	 * Return the map favorites helper.
+	 *
+	 * @return MapFavorites
+	 */
+	public function getMapFavorites() {
+		return $this->mapFavorites;
+	}
+
+	/**
+	 * Return the global favorites sync helper.
+	 *
+	 * @return MapFavoritesSync
+	 */
+	public function getMapFavoritesSync() {
+		return $this->mapFavoritesSync;
 	}
 
 	/**
@@ -842,6 +872,9 @@ class MapManager implements CallbackListener, CommunicationListener, UsageInform
 	public function handleAfterInit() {
 		// Fetch MX infos
 		$this->getMXManager()->fetchManiaExchangeMapInformation();
+
+		// Kick the global favorites flow early so first-use pulls don't wait for the timer.
+		$this->mapFavoritesSync->handleSyncTimer();
 	}
 
 	/**

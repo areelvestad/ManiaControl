@@ -1,4 +1,12 @@
-###v0.261###
+###v0.262###
+#Additions
+- favorite maps in map list
+- global favorite maps synced between servers
+
+#Changes
+- Autoupdate now uses github repo for this fork
+
+###v0.261### <-- new Maniacontrol fork by elvestad
 #Bug Fixes
 - fixed map list/search on very large servers
 - fixed map list paging, author filtering and repeated searches
