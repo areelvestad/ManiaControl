@@ -1,12 +1,9 @@
 Fork of a fork of ManiaControl. I'm not smart, so maybe this explode servers.
 
+This fork fixes Mania-Exchange integration with Shootmania Servers, and adds a favourite map system to the "map list" that works across servers.
+
 ManiaControl
 ============
-
-The newly designed and easy to use ManiaPlanet Server Controller.
-
-https://www.maniacontrol.com
-
 
 ## SETUP:
 
