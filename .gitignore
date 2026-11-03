@@ -5,8 +5,11 @@
 /configs/*
 !/configs/server.default.xml
 /logs/
+/howtoupdate.md
 /ManiaControl.log
 /ManiaControl.pid
 !/plugins/
 /plugins/*
+/plugins/Monkeyland/
 !/plugins/MCTeam/
+!/plugins/Benchmark/

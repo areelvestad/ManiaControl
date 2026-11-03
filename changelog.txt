@@ -1,3 +1,10 @@
+###v0.263###
+#Additions
+- Added new plugin, BenchmarkMapsPlugin
+
+#Bug Fixes
+- Fixed scheduled core update checks and update-check interval handling
+
 ###v0.262###
 #Additions
 - favorite maps in map list

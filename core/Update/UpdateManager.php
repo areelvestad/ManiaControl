@@ -69,7 +69,7 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 		$this->maniaControl->getSettingManager()->initSetting($this, self::SETTING_PERFORM_BACKUPS, true);
 
 		// Callbacks
-		$updateInterval = $this->maniaControl->getSettingManager()->getSettingValue($this, self::SETTING_UPDATECHECK_INTERVAL);
+		$updateInterval = max(1, (int) $this->maniaControl->getSettingManager()->getSettingValue($this, self::SETTING_UPDATECHECK_INTERVAL));
 		$this->maniaControl->getTimerManager()->registerTimerListening($this, 'hourlyUpdateCheck', 1000 * 60 * 60 * $updateInterval);
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(PlayerManager::CB_PLAYERCONNECT, $this, 'handlePlayerJoined');
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(PlayerManager::CB_PLAYERDISCONNECT, $this, 'handlePlayerDisconnect');
@@ -118,6 +118,14 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 		$this->checkCoreUpdateAsync(array($this, 'handleUpdateCheck'));
 	}
 
+	/** Run the scheduled core update check. */
+	public function hourlyUpdateCheck() {
+		if (!$this->maniaControl->getSettingManager()->getSettingValue($this, self::SETTING_ENABLE_UPDATECHECK)) {
+			return;
+		}
+		$this->checkUpdate();
+	}
+
 	/**
 	 * Checks a Core Update asynchronously
 	 *
@@ -154,9 +162,11 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 	 * @param string tag from github repo of the latest release
 	 */
 	public function handleUpdateCheck(string $updateData = null) {
-		if ($this->coreUpdateData != $updateData) {
-				Logger::log("New ManiaControl Version {$updateData} available!");
-				$this->setCoreUpdateData($updateData);
+		if (!$updateData) {
+			$this->setCoreUpdateData(null);
+		} elseif ($this->coreUpdateData != $updateData) {
+			Logger::log("New ManiaControl Version {$updateData} available!");
+			$this->setCoreUpdateData($updateData);
 		}
 
 		$this->checkAutoUpdate();
@@ -343,11 +353,14 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 	}
 
 	public function handleSettingChanged(Setting $setting) {
-		if (!$setting->setting != self::SETTING_UPDATECHECK_INTERVAL) {
+		if ($setting->class !== get_class($this)) {
 			return;
 		}
 
-		$this->maniaControl->getTimerManager()->updateTimerListening($this, 'hourlyUpdateCheck', 1000 * 60 * 60);
+		if ($setting->setting === self::SETTING_UPDATECHECK_INTERVAL) {
+			$updateInterval = max(1, (int) $setting->value);
+			$this->maniaControl->getTimerManager()->updateTimerListening($this, 'hourlyUpdateCheck', 1000 * 60 * 60 * $updateInterval);
+		}
 	}
 
 	/**
