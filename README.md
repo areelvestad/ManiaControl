@@ -1,6 +1,10 @@
 Fork of a fork of ManiaControl. I'm not smart, so maybe this explode servers.
+Changes are only tested on Shootmania: Strom dedicated servers.
 
-This fork fixes Mania-Exchange integration with Shootmania Servers, and adds a favourite map system to the "map list" that works across servers.
+* Fixes for Mania-Exchange integration with MP4 servers
+* Adds a favourite map system to the server map list that works across servers
+* Adds a plugin for Shootmania: Obstacle "Benchmark" event
+* Small fixes to ManiaControl update and autoupdate system
 
 ManiaControl
 ============
@@ -40,8 +44,3 @@ ManiaControl
 	- php_zlib
 	- php_zip
 	- php_mbstring
-	
-### How to report bugs or request features?:
-- Write a mail to bugs(at)maniacontrol(dot)com
-- Open an issue on GitHub.com/ManiaControl/ManiaControl
-- Post in the ManiaPlanet Forum
