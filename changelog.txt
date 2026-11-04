@@ -1,6 +1,12 @@
+###v0.264###
+#Changes
+- Changed the Obstacle Benchmark 2 plugin to use obstacle.titlepack.io API to fetch player data.
+- Added Benchmark leaderboard to the plugin. 
+
+
 ###v0.263###
 #Additions
-- Added new plugin, BenchmarkMapsPlugin
+- Added new plugin for Obstacle Benchmark 2. 
 
 #Bug Fixes
 - Fixed scheduled core update checks and update-check interval handling

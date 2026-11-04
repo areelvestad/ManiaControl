@@ -3,6 +3,8 @@
 namespace BenchmarkMaps;
 
 use ManiaControl\Callbacks\CallbackListener;
+use ManiaControl\Commands\CommandListener;
+use ManiaControl\Files\AsyncHttpRequest;
 use FML\Controls\Frame;
 use FML\Controls\Labels\Label_Button;
 use FML\Controls\Labels\Label_Text;
@@ -29,16 +31,18 @@ use Maniaplanet\DedicatedServer\Xmlrpc\NotInListException;
 /**
  * Displays the Obstacle Benchmark 2 campaign maps and server availability.
  */
-class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryListener, ManialinkPageAnswerListener {
+class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, SidebarMenuEntryListener, ManialinkPageAnswerListener {
 	const ID      = 1002;
 	const VERSION = 1.0;
-	const NAME    = 'Benchmark maps';
-	const AUTHOR  = 'Benchmark maps';
+	const NAME    = 'Benchmark';
+	const AUTHOR  = 'Benchmark';
 
 	const MENU_ID       = 'BenchmarkMaps.Menu';
 	const WIDGET_NAME   = 'BenchmarkMaps.List';
 	const ACTION_SHOW   = 'BenchmarkMaps.Show';
+	const ACTION_SHOW_LEADERBOARD = 'BenchmarkMaps.ShowLeaderboard';
 	const ACTION_PAGING = 'BenchmarkMaps.Page.';
+	const ACTION_LEADERBOARD_PAGING = 'BenchmarkMaps.LeaderboardPage.';
 	const ACTION_ROW = 'BenchmarkMaps.Row.';
 	const ACTION_FILTER = 'BenchmarkMaps.Filter.';
 	const MAX_MAPS_PER_PAGE = 12;
@@ -48,11 +52,24 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 	const CACHE_FILTER_UNFINISHED = 'FilterUnfinished';
 	const CACHE_FILTER_RANK = 'FilterRank';
 	const CACHE_CURRENT_PAGE = 'CurrentPage';
+	const CACHE_CURRENT_VIEW = 'CurrentView';
+	const CACHE_LEADERBOARD_PAGE = 'LeaderboardPage';
 	const PLAYER_STATS_CACHE_TTL = 3600;
+	const LEADERBOARD_CACHE_TTL = 21600;
+	const LEADERBOARD_TITLE_BATCH_SIZE = 12;
 
 	/** @var ManiaControl */
 	private $maniaControl = null;
 	private $playerStatsCache = array();
+	private $playerStatsRequestIds = array();
+	/** @var array<int, array<string, mixed>>|null */
+	private $leaderboardCache = null;
+	private $leaderboardFetchedAt = 0;
+	private $leaderboardCacheLoaded = false;
+	private $leaderboardRequestPending = false;
+	private $leaderboardLastAttemptAt = 0;
+	private $leaderboardRequestId = 0;
+	private $pendingLeaderboardViewers = array();
 	private $pendingJoinMessages = array();
 	private $pendingListRefresh = array();
 
@@ -76,7 +93,7 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 	}
 
 	public static function getDescription() {
-		return 'Shows Benchmark 2 campaign maps and whether each map is loaded on this server.';
+		return 'Shows Benchmark 2 maps, player progress, and the campaign leaderboard.';
 	}
 
 	public function load(ManiaControl $maniaControl) {
@@ -88,11 +105,20 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 			'Broadcast title, server role, and nation on player and spectator joins.'
 		);
 		$this->initPlayerStatsCacheTable();
+		$this->maniaControl->getCommandManager()->registerCommandListener(
+			'benchmarkclearcache',
+			$this,
+			'handleClearPlayerStatsCache',
+			false,
+			'Clears your cached Benchmark data; it will be fetched again when you open the Benchmark menu.'
+		);
 
 		$manialinkManager = $this->maniaControl->getManialinkManager();
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(PlayerManager::CB_PLAYERCONNECT, $this, 'handlePlayerConnect');
 		$manialinkManager->registerManialinkPageAnswerListener(self::ACTION_SHOW, $this, 'handleShow');
+		$manialinkManager->registerManialinkPageAnswerListener(self::ACTION_SHOW_LEADERBOARD, $this, 'handleShowLeaderboard');
 		$manialinkManager->registerManialinkPageAnswerRegexListener('/^' . preg_quote(self::ACTION_PAGING, '/') . '(\\d+)$/', $this, 'handlePaging');
+		$manialinkManager->registerManialinkPageAnswerRegexListener('/^' . preg_quote(self::ACTION_LEADERBOARD_PAGING, '/') . '(\\d+)$/', $this, 'handleLeaderboardPaging');
 		$manialinkManager->registerManialinkPageAnswerRegexListener('/^' . preg_quote(self::ACTION_ROW, '/') . '(Queue|Unqueue|Switch|MX)\\.(\\d+)$/', $this, 'handleRowAction');
 		$manialinkManager->registerManialinkPageAnswerRegexListener('/^' . preg_quote(self::ACTION_FILTER, '/') . '(All|Server|Unfinished|Rank\\.(All|Bronze|Silver|Gold|Platinum|Diamond|Master|Grandmaster|Challenger|Celestial))$/', $this, 'handleFilterAction');
 		$manialinkManager->getSidebarMenuManager()->addMenuEntry(
@@ -156,6 +182,49 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 	 */
 	public function handleShow(array $callback, Player $player) {
 		$this->displayBenchmarkList($player, 0);
+	}
+
+	/** Open the campaign leaderboard. */
+	public function handleShowLeaderboard(array $callback, Player $player) {
+		$this->displayLeaderboardList($player, 0);
+	}
+
+	/** Handle a leaderboard page selection. */
+	public function handleLeaderboardPaging(array $callback, Player $player) {
+		$actionId = $callback[1][2];
+		$pageNumber = (int) substr($actionId, strlen(self::ACTION_LEADERBOARD_PAGING));
+		$this->displayLeaderboardList($player, max(0, $pageNumber - 1));
+	}
+
+	/** Clear the invoking player's persisted and in-memory Benchmark data. */
+	public function handleClearPlayerStatsCache(array $chatCallback, Player $player) {
+		$login = strtolower($player->login);
+		unset($this->playerStatsCache[$login]);
+		unset($this->pendingJoinMessages[$login]);
+		unset($this->pendingListRefresh[$login]);
+		$this->playerStatsRequestIds[$login] = isset($this->playerStatsRequestIds[$login])
+			? $this->playerStatsRequestIds[$login] + 1
+			: 1;
+
+		$mysqli = $this->maniaControl->getDatabase()->getMysqli();
+		$mysqli->query('UPDATE `' . self::TABLE_PLAYER_STATS . '` SET `leaderboard_seen_at` = 0 WHERE `leaderboard_member` = 1');
+		$this->leaderboardFetchedAt = 0;
+		$this->leaderboardCacheLoaded = false;
+		$this->leaderboardCache = null;
+		$statement = $mysqli->prepare('DELETE FROM `' . self::TABLE_PLAYER_STATS . '` WHERE `login` = ?');
+		if (!$statement) {
+			$this->maniaControl->getChat()->sendError('Could not clear your Benchmark cache.', $player);
+			return;
+		}
+		$statement->bind_param('s', $login);
+		$success = $statement->execute();
+		$statement->close();
+		if (!$success) {
+			$this->maniaControl->getChat()->sendError('Could not clear your Benchmark cache.', $player);
+			return;
+		}
+
+		$this->maniaControl->getChat()->sendSuccess('Benchmark cache cleared. Reopen the Benchmark list to fetch fresh data.', $player);
 	}
 
 	/** @param Player $player */
@@ -269,6 +338,7 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 
 	/** @param int $pageIndex */
 	private function displayBenchmarkList(Player $player, $pageIndex) {
+		$player->setCache($this, self::CACHE_CURRENT_VIEW, 'maps');
 		$allMaps = $this->getMapCatalog();
 		$mapManager = $this->maniaControl->getMapManager();
 		$styleManager = $this->maniaControl->getManialinkManager()->getStyleManager();
@@ -495,26 +565,156 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 		}
 		$frame->addChild($rankDropdown);
 
-		$profilePageUrl = 'https://obstacle.titlepack.io/event/benchmark/2?player=' . rawurlencode($player->login);
-		$profileButton = new Frame();
-		$frame->addChild($profileButton);
-		$profileButton->setPosition(-$width / 2 + 5 + 48 / 2, -$height / 2 + 9);
-
-		$profileButtonBackground = new Quad_BgsPlayerCard();
-		$profileButton->addChild($profileButtonBackground);
-		$profileButtonBackground->setSize(48, 4);
-		$profileButtonBackground->setSubStyle(Quad_BgsPlayerCard::SUBSTYLE_BgPlayerCardBig);
-		$profileButtonBackground->setZ(-1);
-		$profileButtonBackground->setUrl($profilePageUrl);
-
-		$profileButtonLabel = new Label_Button();
-		$profileButton->addChild($profileButtonLabel);
-		$profileButtonLabel->setText('Your benchmark page');
-		$profileButtonLabel->setTextSize(1);
-		$profileButtonLabel->setUrl($profilePageUrl);
+		$this->addNavigationButton($frame, 'Leaderboard', self::ACTION_SHOW_LEADERBOARD, $width, $height);
 
 		$this->maniaControl->getManialinkManager()->displayWidget($maniaLink, $player, self::WIDGET_NAME);
 		$this->requestPlayerStats($player);
+	}
+
+	/**
+	 * Render the shared, locally paged campaign leaderboard.
+	 * @param int $pageIndex
+	 */
+	private function displayLeaderboardList(Player $player, $pageIndex) {
+		$player->setCache($this, self::CACHE_CURRENT_VIEW, 'leaderboard');
+		$player->setCache($this, self::CACHE_LEADERBOARD_PAGE, (int) $pageIndex);
+		$this->requestLeaderboard($player);
+
+		$rows = is_array($this->leaderboardCache) ? $this->leaderboardCache : array();
+		$styleManager = $this->maniaControl->getManialinkManager()->getStyleManager();
+		$width = $styleManager->getListWidgetsWidth();
+		$height = $styleManager->getListWidgetsHeight();
+		$pageCount = max(1, (int) ceil(count($rows) / self::MAX_MAPS_PER_PAGE));
+		$pageIndex = max(0, min((int) $pageIndex, $pageCount - 1));
+		$player->setCache($this, self::CACHE_LEADERBOARD_PAGE, $pageIndex);
+		$pageRows = array_slice($rows, $pageIndex * self::MAX_MAPS_PER_PAGE, self::MAX_MAPS_PER_PAGE);
+
+		$maniaLink = new ManiaLink(ManialinkManager::MAIN_MLID);
+		$script = $maniaLink->getScript();
+		$paging = new Paging();
+		$script->addFeature($paging);
+		$paging->setCustomMaxPageNumber($pageCount);
+		$paging->setChunkActionAppendsPageNumber(true);
+		$paging->setChunkActions(self::ACTION_LEADERBOARD_PAGING);
+		$paging->setStartPageNumber($pageIndex + 1);
+		$frame = $styleManager->getDefaultListFrame($script, $paging);
+		$maniaLink->addChild($frame);
+
+		$headerFrame = new Frame();
+		$frame->addChild($headerFrame);
+		$headerFrame->setY($height / 2 - 5);
+		$descriptionLabel = $styleManager->getDefaultDescriptionLabel();
+		$frame->addChild($descriptionLabel);
+		$header = new LabelLine($headerFrame);
+		$header->setTextSize(2.0);
+		$header->addLabelEntryText('Benchmark 2', -$width / 2 + 5, 35);
+		$header->render();
+		$this->addPlayerStatsHeader($headerFrame, $player, $width);
+
+		$pageFrame = new Frame();
+		$frame->addChild($pageFrame);
+		$paging->addPageControl($pageFrame, $pageIndex + 1);
+
+		$headingFrame = new Frame();
+		$frame->addChild($headingFrame);
+		$headingFrame->setY($height / 2 - 11);
+		$this->addLeaderboardColumnHeading($headingFrame, 'Rank', -$width / 2 + 5, 13);
+		$this->addLeaderboardColumnHeading($headingFrame, 'Player', -$width / 2 + 20, 55);
+		$this->addLeaderboardColumnHeading($headingFrame, 'Title', -$width / 2 + 77, 34);
+		$this->addLeaderboardColumnHeading($headingFrame, 'Average rank', $width / 2 - 48, 28);
+		$this->addLeaderboardColumnHeading($headingFrame, 'Finished', $width / 2 - 19, 22);
+
+		if (!$pageRows) {
+			$emptyLabel = new Label_Text();
+			$frame->addChild($emptyLabel);
+			$emptyLabel->setY(0);
+			$emptyLabel->setSize($width - 20, 5);
+			$emptyLabel->setAlign('center', 'center');
+			$emptyLabel->setTextColor('aaa');
+			$emptyLabel->setText($this->leaderboardRequestPending ? 'Loading Benchmark leaderboard...' : 'Leaderboard unavailable. Reopen this list to retry.');
+		}
+
+		$posY = $height / 2 - 16;
+		$rowIndex = $pageIndex * self::MAX_MAPS_PER_PAGE;
+		$tierColors = array(
+			'Bronze' => 'a83', 'Silver' => 'fff', 'Gold' => 'fd7',
+			'Platinum' => '9bd', 'Diamond' => 'd3e', 'Master' => '87b',
+			'Grandmaster' => 'c66', 'Challenger' => 'fff', 'Celestial' => 'cef',
+		);
+		foreach ($pageRows as $entry) {
+			$rowFrame = new Frame();
+			$pageFrame->addChild($rowFrame);
+			$rowFrame->setY($posY);
+			if ($rowIndex % 2 === 0) {
+				$background = new Quad_BgsPlayerCard();
+				$rowFrame->addChild($background);
+				$background->setSize($width, 4);
+				$background->setSubStyle(Quad_BgsPlayerCard::SUBSTYLE_BgPlayerCardBig);
+				$background->setZ(-0.1);
+			}
+
+			$row = new LabelLine($rowFrame);
+			$row->setTextSize(1.25);
+			$row->addLabelEntryText((string) $entry['rank'], -$width / 2 + 5, 13);
+			$row->addLabelEntryText($entry['playerName'], -$width / 2 + 20, 55);
+			$title = isset($entry['title']) ? $entry['title'] : 'Unknown';
+			$titleColor = isset($tierColors[$title]) ? '$' . $tierColors[$title] : '$999';
+			$row->addLabelEntryText($titleColor . $title, -$width / 2 + 77, 34);
+			$row->addLabelEntryText((string) $entry['average'], $width / 2 - 48, 28);
+			$finished = (string) $entry['finished'];
+			if (strpos($finished, '/') === false) {
+				$finished .= '/' . count($this->getMapCatalog());
+			}
+			$row->addLabelEntryText($finished, $width / 2 - 19, 22);
+			$row->render();
+			$posY -= 4.2;
+			$rowIndex++;
+		}
+
+		$this->addNavigationButton($frame, 'Benchmark maps', self::ACTION_SHOW, $width, $height);
+		$this->maniaControl->getManialinkManager()->displayWidget($maniaLink, $player, self::WIDGET_NAME);
+		$this->requestPlayerStats($player);
+	}
+
+	/**
+	 * @param string    $text
+	 * @param int|float $x
+	 * @param int|float $width
+	 */
+	private function addLeaderboardColumnHeading(Frame $frame, $text, $x, $width) {
+		$label = new Label_Text();
+		$frame->addChild($label);
+		$label->setPosition($x, 0, 0.2);
+		$label->setSize($width, 3);
+		$label->setTextSize(0.9);
+		$label->setTextColor('aaa');
+		$label->setText($text);
+		$label->setAlign('left', 'center');
+	}
+
+	/**
+	 * @param string    $text
+	 * @param string    $action
+	 * @param int|float $width
+	 * @param int|float $height
+	 */
+	private function addNavigationButton(Frame $frame, $text, $action, $width, $height) {
+		$buttonFrame = new Frame();
+		$frame->addChild($buttonFrame);
+		$buttonFrame->setPosition(-$width / 2 + 5 + 48 / 2, -$height / 2 + 9);
+
+		$background = new Quad_BgsPlayerCard();
+		$buttonFrame->addChild($background);
+		$background->setSize(48, 4);
+		$background->setSubStyle(Quad_BgsPlayerCard::SUBSTYLE_BgPlayerCardBig);
+		$background->setZ(-1);
+		$background->setAction($action);
+
+		$label = new Label_Button();
+		$buttonFrame->addChild($label);
+		$label->setText($text);
+		$label->setTextSize(1);
+		$label->setAction($action);
 	}
 
 	/** @param int|float $width */
@@ -559,11 +759,340 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 				`login` varchar(100) NOT NULL,
 				`stats` mediumtext NOT NULL,
 				`fetched_at` int(10) unsigned NOT NULL,
+				`leaderboard_member` tinyint(1) unsigned NOT NULL DEFAULT 0,
+				`leaderboard_seen_at` int(10) unsigned NOT NULL DEFAULT 0,
 				PRIMARY KEY (`login`)
 				) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;";
 		if (!$mysqli->query($query)) {
 			trigger_error('Benchmark Maps player cache table could not be initialized: ' . $mysqli->error, E_USER_WARNING);
+			return;
 		}
+		foreach (array(
+			'leaderboard_member' => 'tinyint(1) unsigned NOT NULL DEFAULT 0',
+			'leaderboard_seen_at' => 'int(10) unsigned NOT NULL DEFAULT 0',
+		) as $column => $definition) {
+			$result = $mysqli->query("SHOW COLUMNS FROM `" . self::TABLE_PLAYER_STATS . "` LIKE '" . $column . "'");
+			if ($result && $result->num_rows === 0) {
+				$mysqli->query('ALTER TABLE `' . self::TABLE_PLAYER_STATS . '` ADD COLUMN `' . $column . '` ' . $definition);
+			}
+			if ($result) {
+				$result->free();
+			}
+		}
+	}
+
+	private function loadLeaderboardCache() {
+		if ($this->leaderboardCacheLoaded) {
+			return;
+		}
+		$this->leaderboardCacheLoaded = true;
+		$mysqli = $this->maniaControl->getDatabase()->getMysqli();
+		$result = $mysqli->query('SELECT `login`, `stats`, `leaderboard_seen_at` FROM `' . self::TABLE_PLAYER_STATS . '` WHERE `leaderboard_member` = 1');
+		if (!$result) {
+			return;
+		}
+		$rows = array();
+		$latestSync = 0;
+		while ($row = $result->fetch_assoc()) {
+			$stats = json_decode($row['stats'], true);
+			if (!is_array($stats)) {
+				continue;
+			}
+			$login = strtolower($row['login']);
+			$stats['login'] = $login;
+			$rows[] = $stats;
+			$latestSync = max($latestSync, (int) $row['leaderboard_seen_at']);
+		}
+		$result->free();
+		usort($rows, function ($a, $b) {
+			return (int) $a['rank'] - (int) $b['rank'];
+		});
+		$this->leaderboardCache = $rows;
+		$this->leaderboardFetchedAt = $latestSync;
+	}
+
+	private function isLeaderboardCacheFresh() {
+		return is_array($this->leaderboardCache)
+			&& time() - $this->leaderboardFetchedAt < self::LEADERBOARD_CACHE_TTL;
+	}
+
+	private function requestLeaderboard(Player $player) {
+		$this->loadLeaderboardCache();
+		$login = strtolower($player->login);
+		if ($this->leaderboardRequestPending) {
+			$this->pendingLeaderboardViewers[$login] = true;
+			return;
+		}
+		if ($this->isLeaderboardCacheFresh()) {
+			return;
+		}
+		if ($this->leaderboardLastAttemptAt && time() - $this->leaderboardLastAttemptAt < 60) {
+			return;
+		}
+
+		$this->leaderboardRequestPending = true;
+		$this->leaderboardLastAttemptAt = time();
+		$this->leaderboardRequestId++;
+		$this->pendingLeaderboardViewers[$login] = true;
+		$requestId = $this->leaderboardRequestId;
+		$query = 'query BenchmarkLeaderboard {' .
+			' event(handle: "benchmark") {' .
+			'  edition(editionId: 2) {' .
+			'   mappack { leaderboard { rank rankAvg mapFinished player { login name } } }' .
+			'  }' .
+			' }' .
+			'}';
+		$this->sendGraphQlRequest($query, array(), function ($content, $error) use ($requestId) {
+			$rows = (!$error && $content) ? $this->parseLeaderboardSummaryResponse($content) : null;
+			if ($rows === null) {
+				$this->logLeaderboardError('roster query failed', $error, $content);
+				$this->finishLeaderboardRequest($requestId);
+				return;
+			}
+			$this->fetchLeaderboardTitleBatch($requestId, $rows, 0);
+		});
+	}
+
+	/**
+	 * @param int                         $requestId
+	 * @param array<int, array<string, mixed>> $rows
+	 * @param int                         $offset
+	 */
+	private function fetchLeaderboardTitleBatch($requestId, array $rows, $offset) {
+		if ($requestId !== $this->leaderboardRequestId) {
+			return;
+		}
+		if ($offset >= count($rows)) {
+			if (!$this->storeLeaderboardPlayers($rows)) {
+				// Keep the UI usable even if database migration or persistence failed.
+				foreach ($rows as &$row) {
+					$row['finished'] = $row['finished'] . '/' . count($this->getMapCatalog());
+				}
+				unset($row);
+				$this->leaderboardCache = $rows;
+				$this->leaderboardFetchedAt = time();
+			}
+			$this->finishLeaderboardRequest($requestId);
+			return;
+		}
+
+		$batch = array_slice($rows, $offset, self::LEADERBOARD_TITLE_BATCH_SIZE);
+		$selection = array();
+		foreach ($batch as $batchIndex => $entry) {
+			$login = json_encode($entry['login']);
+			if ($login === false) {
+				$this->finishLeaderboardRequest($requestId);
+				return;
+			}
+			$selection[] = 'p' . $batchIndex . ': player(login: ' . $login . ') { categorizedRanks { categoryName nbMaps ranks { rank } } }';
+		}
+		$query = 'query BenchmarkLeaderboardTitles {' .
+			' event(handle: "benchmark") { edition(editionId: 2) { ' . implode(' ', $selection) . ' } }' .
+			'}';
+		$this->sendGraphQlRequest($query, array(), function ($content, $error) use ($requestId, $rows, $offset, $batch) {
+			$response = (!$error && $content) ? json_decode($content, true) : null;
+			$edition = isset($response['data']['event']['edition']) ? $response['data']['event']['edition'] : null;
+			if (!is_array($edition)) {
+				$this->logLeaderboardError('player title batch failed', $error, $content);
+				$this->finishLeaderboardRequest($requestId);
+				return;
+			}
+			foreach ($batch as $batchIndex => $entry) {
+				$alias = 'p' . $batchIndex;
+				$playerData = isset($edition[$alias]) ? $edition[$alias] : null;
+				if (!is_array($playerData) || !isset($playerData['categorizedRanks']) || !is_array($playerData['categorizedRanks'])) {
+					// Keep the roster entry; player may have no category data yet.
+					$rows[$offset + $batchIndex]['title'] = 'Unranked';
+					continue;
+				}
+				$completed = array();
+				$totals = array();
+				foreach ($playerData['categorizedRanks'] as $category) {
+					if (empty($category['categoryName'])) {
+						continue;
+					}
+					$tier = $category['categoryName'];
+					$completed[$tier] = isset($category['ranks']) && is_array($category['ranks']) ? count($category['ranks']) : 0;
+					$totals[$tier] = isset($category['nbMaps']) ? (int) $category['nbMaps'] : 0;
+				}
+				$rows[$offset + $batchIndex]['title'] = $this->getRankTitle($completed, $totals);
+			}
+			$this->fetchLeaderboardTitleBatch($requestId, $rows, $offset + count($batch));
+		});
+	}
+
+	/** Persist roster membership and player stats in the shared player cache table. */
+	private function storeLeaderboardPlayers(array $rows) {
+		$mysqli = $this->maniaControl->getDatabase()->getMysqli();
+		$fetchedAt = time();
+		$existingStats = array();
+		$result = $mysqli->query('SELECT `login`, `stats` FROM `' . self::TABLE_PLAYER_STATS . '`');
+		if ($result) {
+			while ($cachedRow = $result->fetch_assoc()) {
+				$cachedStats = json_decode($cachedRow['stats'], true);
+				if (is_array($cachedStats)) {
+					$existingStats[strtolower($cachedRow['login'])] = $cachedStats;
+				}
+			}
+			$result->free();
+		}
+		$mysqli->begin_transaction();
+		if (!$mysqli->query('UPDATE `' . self::TABLE_PLAYER_STATS . '` SET `leaderboard_member` = 0')) {
+			$this->logLeaderboardError('could not reset roster membership', $mysqli->error);
+			$mysqli->rollback();
+			return false;
+		}
+		$statement = $mysqli->prepare('INSERT INTO `' . self::TABLE_PLAYER_STATS . '` (`login`, `stats`, `fetched_at`, `leaderboard_member`, `leaderboard_seen_at`) VALUES (?, ?, ?, 1, ?) ON DUPLICATE KEY UPDATE `stats` = VALUES(`stats`), `fetched_at` = VALUES(`fetched_at`), `leaderboard_member` = 1, `leaderboard_seen_at` = VALUES(`leaderboard_seen_at`)');
+		if (!$statement) {
+			$this->logLeaderboardError('could not prepare player cache upsert', $mysqli->error);
+			$mysqli->rollback();
+			return false;
+		}
+		$leaderboard = array();
+		foreach ($rows as $row) {
+			$login = strtolower($row['login']);
+			$previousStats = isset($existingStats[$login]) ? $existingStats[$login] : array();
+			$stats = array(
+				'playerName' => $row['playerName'],
+				'title' => $row['title'],
+				'rank' => (string) $row['rank'],
+				'average' => $row['average'],
+				'finished' => $row['finished'] . '/' . count($this->getMapCatalog()),
+				'worst' => $row['worst'] !== '-' ? $row['worst'] : (isset($previousStats['worst']) ? $previousStats['worst'] : '-'),
+				'mapRanks' => isset($previousStats['mapRanks']) && is_array($previousStats['mapRanks']) ? $previousStats['mapRanks'] : array(),
+			);
+			// Escape Unicode so four-byte player-name characters work with older utf8 DB columns.
+			$statsJson = json_encode($stats);
+			if ($statsJson === false) {
+				$statement->close();
+				$mysqli->rollback();
+				return false;
+			}
+			$statement->bind_param('ssii', $login, $statsJson, $fetchedAt, $fetchedAt);
+			if (!$statement->execute()) {
+			$this->logLeaderboardError('player cache upsert failed', $statement->error);
+				$statement->close();
+				$mysqli->rollback();
+				return false;
+			}
+			$stats['login'] = $login;
+			$this->playerStatsCache[$login] = array('stats' => $stats, 'fetchedAt' => $fetchedAt, 'pending' => false, 'lastAttemptAt' => $fetchedAt);
+			$leaderboard[] = $stats;
+		}
+		$statement->close();
+		if (!$mysqli->commit()) {
+			$this->logLeaderboardError('could not commit player cache transaction', $mysqli->error);
+			$mysqli->rollback();
+			return false;
+		}
+		usort($leaderboard, function ($a, $b) { return (int) $a['rank'] - (int) $b['rank']; });
+		$this->leaderboardCache = $leaderboard;
+		$this->leaderboardFetchedAt = $fetchedAt;
+		$this->leaderboardCacheLoaded = true;
+		return true;
+	}
+
+	/**
+	 * @param string      $context
+	 * @param mixed       $error
+	 * @param string|null $content
+	 */
+	private function logLeaderboardError($context, $error, $content = null) {
+		$message = 'Benchmark leaderboard ' . $context;
+		if ($error) {
+			$message .= ': ' . (string) $error;
+		}
+		if ($content) {
+			$response = json_decode($content, true);
+			if (isset($response['errors']) && is_array($response['errors'])) {
+				$messages = array();
+				foreach ($response['errors'] as $apiError) {
+					if (isset($apiError['message'])) {
+						$messages[] = $apiError['message'];
+					}
+				}
+				if ($messages) {
+					$message .= ': ' . implode('; ', $messages);
+				}
+			} elseif (!$response) {
+				$message .= ': ' . substr($content, 0, 300);
+			}
+		}
+		trigger_error($message, E_USER_WARNING);
+	}
+
+	/** @param int $requestId */
+	private function finishLeaderboardRequest($requestId) {
+		if ($requestId !== $this->leaderboardRequestId) {
+			return;
+		}
+		$this->leaderboardRequestPending = false;
+		$viewers = $this->pendingLeaderboardViewers;
+		$this->pendingLeaderboardViewers = array();
+		foreach ($viewers as $login => $unused) {
+			$player = $this->maniaControl->getPlayerManager()->getPlayer($login, true);
+			if (!$player || $player->getCache($this, self::CACHE_CURRENT_VIEW) !== 'leaderboard') {
+				continue;
+			}
+			$this->displayLeaderboardList($player, (int) $player->getCache($this, self::CACHE_LEADERBOARD_PAGE));
+		}
+	}
+
+	/**
+	 * @param string               $query
+	 * @param array<string, mixed> $variables
+	 * @param callable             $callback
+	 */
+	private function sendGraphQlRequest($query, array $variables, $callback) {
+		$requestBody = json_encode(array('query' => $query, 'variables' => (object) $variables));
+		if ($requestBody === false) {
+			call_user_func($callback, null, 'Unable to encode GraphQL request.');
+			return;
+		}
+		$request = new AsyncHttpRequest($this->maniaControl, 'https://obstacle.titlepack.io/api/graphql');
+		$request->setContentType(AsyncHttpRequest::CONTENT_TYPE_JSON);
+		$request->setContent($requestBody);
+		$request->setCallable($callback);
+		$request->postData();
+	}
+
+	/**
+	 * @param string $response
+	 * @return array<int, array<string, mixed>>|null
+	 */
+	private function parseLeaderboardSummaryResponse($response) {
+		$data = json_decode($response, true);
+		$entries = isset($data['data']['event']['edition']['mappack']['leaderboard'])
+			? $data['data']['event']['edition']['mappack']['leaderboard']
+			: null;
+		if (!is_array($entries)) {
+			return null;
+		}
+		$rows = array();
+		foreach ($entries as $entry) {
+			if (!isset($entry['player']['login'])) {
+				return null;
+			}
+			$rows[] = array(
+				'rank' => isset($entry['rank']) ? (int) $entry['rank'] : count($rows) + 1,
+				'login' => strtolower($entry['player']['login']),
+				'playerName' => isset($entry['player']['name']) ? $entry['player']['name'] : $entry['player']['login'],
+				'title' => 'Unknown',
+				'average' => isset($entry['rankAvg']) && is_numeric($entry['rankAvg']) ? $this->formatAverageRank($entry['rankAvg']) : '-',
+				'finished' => isset($entry['mapFinished']) ? (int) $entry['mapFinished'] : 0,
+				'worst' => isset($entry['worstRank']) && (int) $entry['worstRank'] > 0 ? (string) $entry['worstRank'] : '-',
+				'mapRanks' => array(),
+			);
+		}
+		return $rows;
+	}
+
+	/**
+	 * @param int|float|string $average
+	 * @return string
+	 */
+	private function formatAverageRank($average) {
+		return rtrim(rtrim(number_format((float) $average, 2, '.', ''), '0'), '.');
 	}
 
 	private function getPlayerStatsCacheEntry(Player $player) {
@@ -612,7 +1141,8 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 	 * @param int    $fetchedAt
 	 */
 	private function storePlayerStatsCache($login, array $stats, $fetchedAt) {
-		$statsJson = json_encode($stats, JSON_UNESCAPED_UNICODE);
+		// Keep cached JSON ASCII-safe for databases whose existing column still uses three-byte utf8.
+		$statsJson = json_encode($stats);
 		if ($statsJson === false) {
 			return;
 		}
@@ -654,10 +1184,37 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 			'pending' => true,
 			'lastAttemptAt' => $now,
 		);
+		$requestId = isset($this->playerStatsRequestIds[$login]) ? $this->playerStatsRequestIds[$login] + 1 : 1;
+		$this->playerStatsRequestIds[$login] = $requestId;
 		$this->pendingListRefresh[$login] = $refreshList;
-		$url = 'https://obstacle.titlepack.io/event/benchmark/2?player=' . rawurlencode($player->login);
-		$this->maniaControl->getFileReader()->loadFile($url, function ($content, $error) use ($login, $player) {
-			$stats = (!$error && $content) ? $this->parsePlayerStatsPage($content, $player->nickname) : null;
+		$url = 'https://obstacle.titlepack.io/api/graphql';
+		$query = 'query BenchmarkPlayerStats($login: String!) {' .
+			' event(handle: "benchmark") {' .
+			'  edition(editionId: 2) {' .
+			'   player(login: $login) {' .
+			'    player { name } rank rankAvg mapFinished worstRank' .
+			'    categorizedRanks { categoryName nbMaps ranks { rank map { map { gameId } } } }' .
+			'   }' .
+			'  }' .
+			' }' .
+			'}';
+		$requestBody = json_encode(array(
+			'query' => $query,
+			'variables' => array('login' => $player->login),
+		));
+		if ($requestBody === false) {
+			$this->playerStatsCache[$login]['pending'] = false;
+			return false;
+		}
+
+		$request = new AsyncHttpRequest($this->maniaControl, $url);
+		$request->setContentType(AsyncHttpRequest::CONTENT_TYPE_JSON);
+		$request->setContent($requestBody);
+		$request->setCallable(function ($content, $error) use ($login, $player, $requestId) {
+			if (!isset($this->playerStatsRequestIds[$login]) || $this->playerStatsRequestIds[$login] !== $requestId) {
+				return;
+			}
+			$stats = (!$error && $content) ? $this->parsePlayerStatsResponse($content, $player->nickname) : null;
 			$previousCache = isset($this->playerStatsCache[$login]) ? $this->playerStatsCache[$login] : array();
 			$previousStats = isset($previousCache['stats']) ? $previousCache['stats'] : null;
 			$previousFetchedAt = isset($previousCache['fetchedAt']) ? $previousCache['fetchedAt'] : 0;
@@ -670,6 +1227,10 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 			);
 			if ($stats) {
 				$this->storePlayerStatsCache($login, $stats, $fetchedAt);
+				if ($this->leaderboardCacheLoaded) {
+					$this->leaderboardCacheLoaded = false;
+					$this->loadLeaderboardCache();
+				}
 			}
 
 			if (isset($this->pendingJoinMessages[$login])) {
@@ -687,10 +1248,15 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 			if ($stats && $refreshList) {
 				$connectedPlayer = $this->maniaControl->getPlayerManager()->getPlayer($player->login, true);
 				if ($connectedPlayer) {
-					$this->displayBenchmarkList($connectedPlayer, (int) $connectedPlayer->getCache($this, self::CACHE_CURRENT_PAGE));
+					if ($connectedPlayer->getCache($this, self::CACHE_CURRENT_VIEW) === 'leaderboard') {
+						$this->displayLeaderboardList($connectedPlayer, (int) $connectedPlayer->getCache($this, self::CACHE_LEADERBOARD_PAGE));
+					} else {
+						$this->displayBenchmarkList($connectedPlayer, (int) $connectedPlayer->getCache($this, self::CACHE_CURRENT_PAGE));
+					}
 				}
 			}
 		});
+		$request->postData();
 		return true;
 	}
 
@@ -709,172 +1275,84 @@ class BenchmarkMapsPlugin implements Plugin, CallbackListener, SidebarMenuEntryL
 	}
 
 	/**
-	 * @param string $html
+	 * Convert the public Benchmark GraphQL response into the cache format used by the UI.
+	 *
+	 * @param string $response
 	 * @param string $fallbackName
+	 * @return array|null
 	 */
-	private function parsePlayerStatsPage($html, $fallbackName) {
-		if (!class_exists('DOMDocument')) {
+	private function parsePlayerStatsResponse($response, $fallbackName) {
+		$responseData = json_decode($response, true);
+		$playerData = isset($responseData['data']['event']['edition']['player'])
+			? $responseData['data']['event']['edition']['player']
+			: null;
+		if (!is_array($playerData)) {
 			return null;
 		}
-		$previousState = libxml_use_internal_errors(true);
-		$document = new \DOMDocument();
-		$loaded = $document->loadHTML('<?xml encoding="UTF-8">' . $html);
-		libxml_clear_errors();
-		libxml_use_internal_errors($previousState);
-		if (!$loaded) {
-			return null;
-		}
-		$xpath = new \DOMXPath($document);
-		$dialog = $xpath->query('//dialog')->item(0);
-		if (!$dialog) {
-			if (stripos($html, 'Obstacle Leaderboards - Benchmark 2') !== false) {
-				return array(
-					'playerName' => $fallbackName,
-					'title' => 'Unranked',
-					'rank' => '',
-					'average' => '-',
-					'finished' => '0/54',
-					'worst' => '-',
-					'mapRanks' => array(),
-				);
-			}
-			return null;
-		}
-		$bodies = $xpath->query('.//div[contains(concat(" ", normalize-space(@class), " "), " Tbody ")]', $dialog);
-		$body = $bodies->item(0);
-		if (!$body) {
-			return null;
-		}
-		$rows = array();
-		foreach ($body->childNodes as $child) {
-			if ($child->nodeType === XML_ELEMENT_NODE && strtolower($child->nodeName) === 'div') {
-				$rows[] = $child;
+
+		$mapRanks = array();
+		if (isset($playerData['categorizedRanks']) && is_array($playerData['categorizedRanks'])) {
+			foreach ($playerData['categorizedRanks'] as $category) {
+				if (empty($category['ranks']) || !is_array($category['ranks'])) {
+					continue;
+				}
+				foreach ($category['ranks'] as $rankData) {
+					$mapUid = isset($rankData['map']['map']['gameId']) ? $rankData['map']['map']['gameId'] : null;
+					if ($mapUid !== null && isset($rankData['rank'])) {
+						$mapRanks[$mapUid] = (string) $rankData['rank'];
+					}
+				}
 			}
 		}
-		if (count($rows) < 2) {
-			return null;
-		}
-		$cells = array();
-		foreach ($rows[1]->childNodes as $child) {
-			if ($child->nodeType === XML_ELEMENT_NODE && strtolower($child->nodeName) === 'div') {
-				$cells[] = $child;
-			}
-		}
-		if (count($cells) < 4) {
-			return null;
-		}
-		$finished = trim($cells[2]->textContent);
-		if (preg_match('/^(\d+)\s*(\d+)$/', $finished, $matches)) {
-			$finished = $matches[1] . '/' . $matches[2];
-		}
-		if (strpos($finished, '/') === false) {
-			return null;
-		}
-		$tierProgress = $this->getCompletedTierData($body);
-		$completedTierCounts = $tierProgress['counts'];
-		$tierTotals = array();
+
+		$completedTierCounts = array();
 		foreach ($this->getMapCatalog() as $mapData) {
-			$tierTotals[$mapData['tier']] = isset($tierTotals[$mapData['tier']]) ? $tierTotals[$mapData['tier']] + 1 : 1;
+			$tier = $mapData['tier'];
+			if (isset($mapRanks[$mapData['uid']])) {
+				$completedTierCounts[$tier] = isset($completedTierCounts[$tier]) ? $completedTierCounts[$tier] + 1 : 1;
+			}
 		}
-		$rankTitle = 'Unranked';
+		$rankTitle = $this->getRankTitle($completedTierCounts);
+
+		$playerName = isset($playerData['player']['name']) && $playerData['player']['name'] !== ''
+			? $playerData['player']['name']
+			: $fallbackName;
+		$rank = isset($playerData['rank']) && (int) $playerData['rank'] > 0 ? (string) $playerData['rank'] : '';
+		$average = isset($playerData['rankAvg']) && is_numeric($playerData['rankAvg'])
+			? $this->formatAverageRank($playerData['rankAvg'])
+			: '-';
+		$worst = isset($playerData['worstRank']) && (int) $playerData['worstRank'] > 0
+			? (string) $playerData['worstRank']
+			: '-';
+		$mapsFinished = isset($playerData['mapFinished']) ? (int) $playerData['mapFinished'] : count($mapRanks);
+
+		return array(
+			'playerName' => $playerName,
+			'title' => $rankTitle,
+			'rank' => $rank,
+			'average' => $average,
+			'finished' => $mapsFinished . '/' . count($this->getMapCatalog()),
+			'worst' => $worst,
+			'mapRanks' => $mapRanks,
+		);
+	}
+
+	private function getRankTitle(array $completedTierCounts, array $tierTotals = null) {
+		if ($tierTotals === null) {
+			$tierTotals = array();
+			foreach ($this->getMapCatalog() as $mapData) {
+				$tier = $mapData['tier'];
+				$tierTotals[$tier] = isset($tierTotals[$tier]) ? $tierTotals[$tier] + 1 : 1;
+			}
+		}
+		$title = 'Unranked';
 		foreach (array('Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Grandmaster', 'Challenger', 'Celestial') as $tier) {
 			if (empty($tierTotals[$tier]) || !isset($completedTierCounts[$tier]) || $completedTierCounts[$tier] < $tierTotals[$tier]) {
 				break;
 			}
-			$rankTitle = $tier;
+			$title = $tier;
 		}
-		$playerName = $fallbackName;
-		/** @var \DOMElement|null $nameLink */
-		$nameLink = $xpath->query('.//h1//a', $dialog)->item(0);
-		if ($nameLink && $nameLink->getAttribute('title')) {
-			$playerName = $nameLink->getAttribute('title');
-		}
-		return array(
-			'playerName' => $playerName,
-			'title' => $rankTitle,
-			'rank' => trim($cells[0]->textContent),
-			'average' => trim($cells[1]->textContent),
-			'finished' => $finished,
-			'worst' => trim($cells[3]->textContent),
-			'mapRanks' => $tierProgress['mapRanks'],
-		);
-	}
-
-	private function getCompletedTierData(\DOMElement $body) {
-		$children = array();
-		foreach ($body->childNodes as $child) {
-			if ($child->nodeType === XML_ELEMENT_NODE && strtolower($child->nodeName) === 'div') {
-				$children[] = $child;
-			}
-		}
-		$finishedMapsIndex = null;
-		foreach ($children as $index => $child) {
-			if (trim($child->textContent) === 'Finished maps') {
-				$finishedMapsIndex = $index;
-				break;
-			}
-		}
-		if ($finishedMapsIndex === null) {
-			return array('counts' => array(), 'mapRanks' => array());
-		}
-		$counts = array();
-		$mapRanks = array();
-		for ($index = $finishedMapsIndex + 1; $index < count($children); $index++) {
-			$sectionChildren = array();
-			foreach ($children[$index]->childNodes as $child) {
-				if ($child->nodeType === XML_ELEMENT_NODE && strtolower($child->nodeName) === 'div') {
-					$sectionChildren[] = $child;
-				}
-			}
-			if (count($sectionChildren) < 2) {
-				continue;
-			}
-			$headingCells = array();
-			foreach ($sectionChildren[0]->childNodes as $child) {
-				if ($child->nodeType === XML_ELEMENT_NODE && strtolower($child->nodeName) === 'div') {
-					$headingCells[] = $child;
-				}
-			}
-			if (!$headingCells) {
-				continue;
-			}
-			$tier = trim($headingCells[0]->textContent);
-			if (!in_array($tier, array('Bronze', 'Silver', 'Gold', 'Platinum', 'Diamond', 'Master', 'Grandmaster', 'Challenger', 'Celestial'), true)) {
-				break;
-			}
-			/** @var \DOMElement $sectionContent */
-			$sectionContent = $sectionChildren[1];
-			$rows = $sectionContent->getElementsByTagName('div');
-			$counts[$tier] = 0;
-			foreach ($rows as $row) {
-				/** @var \DOMElement $row */
-				if (!$row->hasAttribute('tabindex') || $row->getAttribute('tabindex') !== '0') {
-					continue;
-				}
-				$counts[$tier]++;
-				$cells = array();
-				foreach ($row->childNodes as $cell) {
-					if ($cell->nodeType === XML_ELEMENT_NODE && strtolower($cell->nodeName) === 'div') {
-						$cells[] = $cell;
-					}
-				}
-				if (count($cells) < 2) {
-					continue;
-				}
-				/** @var \DOMElement $mapCell */
-				$mapCell = $cells[1];
-				$links = $mapCell->getElementsByTagName('a');
-				if (!$links->length) {
-					continue;
-				}
-				/** @var \DOMElement $mapLink */
-				$mapLink = $links->item(0);
-				$path = parse_url($mapLink->getAttribute('href'), PHP_URL_PATH);
-				$mapUid = rawurldecode(basename($path));
-				$mapRanks[$mapUid] = trim($cells[0]->textContent);
-			}
-		}
-		return array('counts' => $counts, 'mapRanks' => $mapRanks);
+		return $title;
 	}
 
 	/**
