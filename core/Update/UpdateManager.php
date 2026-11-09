@@ -162,9 +162,13 @@ class UpdateManager implements CallbackListener, CommandListener, TimerListener,
 	 * @param string tag from github repo of the latest release
 	 */
 	public function handleUpdateCheck(string $updateData = null) {
-		if (!$updateData) {
+		if (!$this->checkUpdateData($updateData)) {
+			// Do not keep or apply an update that matches the installed version.
 			$this->setCoreUpdateData(null);
-		} elseif ($this->coreUpdateData != $updateData) {
+			return;
+		}
+
+		if ($this->coreUpdateData != $updateData) {
 			Logger::log("New ManiaControl Version {$updateData} available!");
 			$this->setCoreUpdateData($updateData);
 		}

@@ -1,3 +1,7 @@
+###v0.265###
+#Bug Fixes
+- Prevent automatic core updates from reinstalling the currently installed version
+
 ###v0.264###
 #Changes
 - Changed the Obstacle Benchmark 2 plugin to use obstacle.titlepack.io API to fetch player data.
