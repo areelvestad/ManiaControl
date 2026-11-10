@@ -1,6 +1,6 @@
-###v0.277###
+###v0.267###
 #Bugfix
-- Migrated Benchmark join/leave setting and preserved its previous enabled state. Forgot to do this in v0.266.
+- Migrated Benchmark join/leave setting and preserved its previous enabled state.
 
 ###v0.266###
 #Changes
