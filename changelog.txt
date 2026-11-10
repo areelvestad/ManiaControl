@@ -1,10 +1,14 @@
+###v0.277###
+#Bugfix
+- Migrated Benchmark join/leave setting and preserved its previous enabled state. Forgot to do this in v0.266.
+
 ###v0.266###
 #Changes
 - Added Benchmark leave announcements; the join/leave message setting now covers departures.
 
 ###v0.265###
 #Bug Fixes
-- Prevent automatic core updates from reinstalling the currently installed version
+- Prevent automatic core updates from reinstalling the currently installed version.
 
 ###v0.264###
 #Changes

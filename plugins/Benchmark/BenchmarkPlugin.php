@@ -47,6 +47,7 @@ class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, Side
 	const ACTION_FILTER = 'BenchmarkMaps.Filter.';
 	const MAX_MAPS_PER_PAGE = 12;
 	const SETTING_JOIN_MESSAGES = 'Send Benchmark join & leave messages';
+	const LEGACY_SETTING_JOIN_MESSAGES = 'Send Benchmark Title Join Messages';
 	const TABLE_PLAYER_STATS = 'benchmarkmaps_playerstats';
 	const CACHE_FILTER_SERVER_ONLY = 'FilterServerOnly';
 	const CACHE_FILTER_UNFINISHED = 'FilterUnfinished';
@@ -98,12 +99,26 @@ class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, Side
 
 	public function load(ManiaControl $maniaControl) {
 		$this->maniaControl = $maniaControl;
-		$this->maniaControl->getSettingManager()->initSetting(
+		$settingManager = $this->maniaControl->getSettingManager();
+		$legacyJoinMessages = $settingManager->getSettingValue($this, self::LEGACY_SETTING_JOIN_MESSAGES);
+		$currentJoinMessages = $settingManager->getSettingValue($this, self::SETTING_JOIN_MESSAGES);
+		$settingInitialized = $settingManager->initSetting(
 			$this,
 			self::SETTING_JOIN_MESSAGES,
 			false,
-			'Broadcast server role, nickname, title, and nation when a player or spectator joins.'
+			'Broadcast server role, nickname, title, and nation when a player or spectator joins; announce playtime on leave.'
 		);
+		if ($settingInitialized) {
+			if ($currentJoinMessages === null && $legacyJoinMessages !== null) {
+				if ($settingManager->setSetting($this, self::SETTING_JOIN_MESSAGES, (bool) $legacyJoinMessages)) {
+					$settingManager->deleteSetting($this, self::LEGACY_SETTING_JOIN_MESSAGES);
+				} else {
+					trigger_error('Benchmark join-message setting migration failed; keeping legacy setting for retry.', E_USER_WARNING);
+				}
+			} else {
+				$settingManager->deleteSetting($this, self::LEGACY_SETTING_JOIN_MESSAGES);
+			}
+		}
 		$this->initPlayerStatsCacheTable();
 		$this->maniaControl->getCommandManager()->registerCommandListener(
 			'benchmarkclearcache',
