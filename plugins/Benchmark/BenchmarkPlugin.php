@@ -46,7 +46,7 @@ class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, Side
 	const ACTION_ROW = 'BenchmarkMaps.Row.';
 	const ACTION_FILTER = 'BenchmarkMaps.Filter.';
 	const MAX_MAPS_PER_PAGE = 12;
-	const SETTING_JOIN_MESSAGES = 'Send Benchmark Title Join Messages';
+	const SETTING_JOIN_MESSAGES = 'Send Benchmark join & leave messages';
 	const TABLE_PLAYER_STATS = 'benchmarkmaps_playerstats';
 	const CACHE_FILTER_SERVER_ONLY = 'FilterServerOnly';
 	const CACHE_FILTER_UNFINISHED = 'FilterUnfinished';
@@ -102,7 +102,7 @@ class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, Side
 			$this,
 			self::SETTING_JOIN_MESSAGES,
 			false,
-			'Broadcast title, server role, and nation on player and spectator joins.'
+			'Broadcast server role, nickname, title, and nation when a player or spectator joins.'
 		);
 		$this->initPlayerStatsCacheTable();
 		$this->maniaControl->getCommandManager()->registerCommandListener(
@@ -115,6 +115,7 @@ class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, Side
 
 		$manialinkManager = $this->maniaControl->getManialinkManager();
 		$this->maniaControl->getCallbackManager()->registerCallbackListener(PlayerManager::CB_PLAYERCONNECT, $this, 'handlePlayerConnect');
+		$this->maniaControl->getCallbackManager()->registerCallbackListener(PlayerManager::CB_PLAYERDISCONNECT, $this, 'handlePlayerDisconnect');
 		$manialinkManager->registerManialinkPageAnswerListener(self::ACTION_SHOW, $this, 'handleShow');
 		$manialinkManager->registerManialinkPageAnswerListener(self::ACTION_SHOW_LEADERBOARD, $this, 'handleShowLeaderboard');
 		$manialinkManager->registerManialinkPageAnswerRegexListener('/^' . preg_quote(self::ACTION_PAGING, '/') . '(\\d+)$/', $this, 'handlePaging');
@@ -247,6 +248,31 @@ class BenchmarkPlugin implements Plugin, CallbackListener, CommandListener, Side
 			$stats = ($cache && !empty($cache['stats'])) ? $cache['stats'] : array('title' => 'Unknown');
 			$this->sendBenchmarkJoinMessage($player, $stats);
 		}
+	}
+
+	/** Send PlayerManager-style leave messages when Benchmark messages are enabled. */
+	public function handlePlayerDisconnect(Player $player) {
+		if (!$this->maniaControl->getSettingManager()->getSettingValue($this, self::SETTING_JOIN_MESSAGES)
+		    || $player->isFakePlayer()) {
+			return;
+		}
+
+		$playTime = Formatter::formatTimeH(time() - $player->joinTime);
+		$color = '$0f0';
+		if ($this->maniaControl->getSettingManager()->getSettingValue(
+			$this->maniaControl->getPlayerManager(),
+			PlayerManager::SETTING_JOIN_LEAVE_COLORING
+		)) {
+			$color = $this->maniaControl->getColorManager()->getColorByPlayer($player);
+		}
+
+		$authName = $player->getAuthLevelName();
+		$message = $this->maniaControl->getChat()->formatMessage(
+			"{$color}{$authName} %s has left after %s!",
+			$player,
+			$playTime
+		);
+		$this->maniaControl->getChat()->sendChat($message);
 	}
 
 	/**
